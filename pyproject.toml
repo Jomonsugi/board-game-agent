@@ -1,0 +1,53 @@
+[project]
+name = "boardgame-agent"
+version = "0.1.0"
+description = "AI assistant that answers board game rules questions with cited, highlighted references to official rulebooks"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    # LLM providers
+    "langchain-core>=0.3.0",
+    "langchain-together>=0.4.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.3.0",
+
+    # Agent framework
+    "langgraph>=0.4.0",
+    "langgraph-checkpoint-sqlite>=2.0.0",
+
+    # Tracing
+    "langsmith>=0.3.0",
+
+    # RAG & vector search
+    "qdrant-client>=1.9.0",
+    "fastembed>=0.4.0",
+    "ollama>=0.4.0",
+
+    # Document processing
+    "docling>=2.40.0",
+    "pymupdf>=1.24.0",
+
+    # Web search (optional but listed — gate on API key at runtime)
+    "tavily-python>=0.5.0",
+
+    # UI
+    "streamlit>=1.35.0",
+    "streamlit-pdf-viewer>=0.0.14",
+
+    # Core utilities
+    "pydantic>=2.0.0",
+    "numpy>=1.26.0",
+    "pillow>=10.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = ["ipykernel>=7.1.0"]
+
+[project.scripts]
+boardgame-agent = "boardgame_agent.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
