@@ -23,12 +23,8 @@ from boardgame_agent.rag.extractor import load_cached_pages
 
 
 def get_pdf_path(game_id: str, doc_name: str) -> Path | None:
-    """Find the PDF for a document, checking both docs/ (new) and pdfs/ (legacy)."""
-    for subdir in ("docs", "pdfs"):
-        p = DATA_DIR / "games" / game_id / subdir / f"{doc_name}.pdf"
-        if p.exists():
-            return p
-    return None
+    p = DATA_DIR / "games" / game_id / "docs" / f"{doc_name}.pdf"
+    return p if p.exists() else None
 
 
 def render_highlighted_page(

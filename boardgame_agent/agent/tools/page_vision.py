@@ -18,12 +18,8 @@ from boardgame_agent.config import DATA_DIR, PAGE_VISION_DPI, PAGE_VISION_MODEL
 
 def _render_page_png(game_id: str, doc_name: str, page_data: dict[str, Any]) -> bytes | None:
     """Render a full page as PNG bytes for sending to a VLM API."""
-    for subdir in ("docs", "pdfs"):
-        p = DATA_DIR / "games" / game_id / subdir / f"{doc_name}.pdf"
-        if p.exists():
-            pdf_path = p
-            break
-    else:
+    pdf_path = DATA_DIR / "games" / game_id / "docs" / f"{doc_name}.pdf"
+    if not pdf_path.exists():
         return None
 
     doc = fitz.open(str(pdf_path.resolve()))

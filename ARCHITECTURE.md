@@ -75,7 +75,7 @@ PDF ──▶ Docling ──▶ per-page JSON with bounding boxes
 
 **Why Docling?** It handles complex multi-column layouts, tables, and returns per-item bounding boxes with provenance. The bboxes are the foundation of the citation system — without them, we can't highlight specific text regions in the PDF viewer.
 
-**Why VLM enrichment at extraction time?** Board game rulebooks communicate heavily through icons. Without VLM descriptions, picture bboxes have empty text and are invisible to search. The VLM prompt is deliberately minimal: "Describe exactly what you see: shapes, colors, numbers, and any text. Do not guess what it means or represents." Meaning resolution happens at query time through the agent's cross-referencing behavior.
+**Why VLM enrichment at extraction time?** Board game rulebooks communicate heavily through icons. Without VLM descriptions, picture bboxes have empty text and are invisible to search. The VLM prompt is deliberately minimal: *"Describe exactly what you see: shapes, colors, numbers, and any text. Do not guess what it means or represents. One sentence."* Meaning resolution happens at query time through the agent's cross-referencing behavior.
 
 **Package: `docling`** — PDF parsing with per-item bounding boxes
 **Package: `pymupdf` (fitz)** — PDF rendering, page cropping, bbox coordinate conversion
@@ -136,12 +136,17 @@ Qdrant does NOT support cross-encoder re-ranking natively. RRF fusion is rank-ba
 
 ### Re-ranker choice
 
-**Cohere Rerank** is the default — highest-quality re-ranker available with a free tier (1,000 calls/month). Falls back to local **FastEmbed BGE-reranker-base** (~1GB) when no API key is set.
+**Cohere Rerank** is the default — highest-quality re-ranker available with a free tier (1,000 calls/month).
+
+`RERANK_PROVIDER` accepts three values:
+- `"cohere"` (default) — uses the Cohere Rerank API. If `COHERE_API_KEY` is missing the pipeline silently degrades to **RRF-only** (no cross-encoder filtering), returning Qdrant's top-k by RRF rank.
+- `"fastembed"` — uses a local **FastEmbed BGE-reranker-base** (~1GB) cross-encoder. Set this explicitly for offline use; the Cohere setting does *not* fall back to it automatically.
+- `"none"` — disables cross-encoder re-ranking entirely.
 
 Cohere returns a `relevance_score` (0-1) per chunk via cross-attention. These scores are currently discarded after re-ordering — they could power a CRAG-style quality gate (see Future considerations).
 
 **Package: `cohere`** — Rerank API (free tier)
-**Package: `fastembed`** — local cross-encoder fallback (BGE-reranker-base)
+**Package: `fastembed`** — local cross-encoder option (BGE-reranker-base)
 
 ### Formatted output to LLM
 
@@ -164,20 +169,34 @@ The LLM sees document name, page number, and numbered bbox references. When it c
 ### LangGraph graph
 
 ```
-planner ──▶ agent ◀──▶ tools ──▶ finalize ──▶ END
+                  ┌──────── (no tool calls) ─────────┐
+                  ▼                                  │
+planner ──▶ agent ──▶ tools ──▶ (submit_answer?) ──▶ finalize ──▶ END
+              ▲          │
+              └──────────┘  (any other tool — loop back)
 ```
+
+The graph has two conditional edges:
+- `agent → tools | finalize` — routes to `finalize` only if the agent produced a text-only response with no tool calls (fallback path).
+- `tools → agent | finalize` — routes to `finalize` when the just-executed tool was `submit_answer`; otherwise loops back to `agent` for the next reasoning step.
 
 **Planner node**: Lightweight check — only detects when the answer is already in conversation context (follow-up questions, rephrased questions). On the first message, it's a no-op. All reasoning about what to search and how deep to go happens in the ReAct agent loop, not here.
 
-**Agent node**: LLM with bound tools. Receives the system prompt (rebuilt fresh each call with current document list) and compressed message history. Makes tool calls until it calls `submit_answer`.
+**Agent node**: LLM with dynamically bound tools (see *Dynamic tool binding* below). Receives the system prompt (rebuilt fresh each call with current document list) and compressed message history. Makes tool calls until it calls `submit_answer`.
 
 **Tools node**: Executes tool calls via LangGraph's ToolNode.
 
 **Finalize node**: Extracts the JSON payload from `submit_answer`'s ToolMessage and writes it to `state["final_answer"]`. No LLM call.
 
-**Recursion limit**: 15. The agent should answer within this. If not, the finalize node falls back to the agent's last text response.
+**Recursion limit**: 20. The agent should answer within this. If not, the finalize node falls back to the agent's last text response.
 
 **Message compression**: ToolMessages from previous turns are compressed to `"[retrieved N chars — already processed]"` to free context space. The agent only sees full results from the current turn.
+
+**Dynamic tool binding**: The set of tools the LLM sees is rebuilt per call from `agent_config["enable_web_search"]` and `agent_config["enable_page_vision"]`. Disabled tools are filtered out of `bind_tools()` entirely — the LLM never sees them in its tool schema, so there are no wasted tokens or "tool not available" responses. The bound model is cached on the `(web_search_on, page_vision_on)` tuple so flipping a sidebar toggle takes effect on the next query without rebuilding the graph.
+
+**Per-query tool-call cache**: `agent_config["_tool_cache"]` is keyed on `(tool_name, args)` and prevents the agent from re-issuing identical `search_rulebook` / `search_web` calls within a single query. The cache is cleared at the start of every new query in `app.py`.
+
+**Checkpointer**: A SQLite checkpointer (`data/agent_checkpoints.db`) persists graph state per `thread_id`, which is what enables follow-up questions in the same Streamlit session to share conversation history.
 
 **Package: `langgraph`** — stateful graph with ReAct loop, checkpointing, streaming
 **Package: `langchain-core`** — message types, tool binding
@@ -219,7 +238,7 @@ Docling labels every non-text visual element in a PDF as a `picture` bbox with c
 }
 ```
 
-The VLM prompt is deliberately minimal: *"Describe exactly what you see: shapes, colors, numbers, and any text. Do not guess what it means or represents."* This produces objective visual descriptions without hallucinating game meaning.
+The VLM prompt is deliberately minimal: *"Describe exactly what you see: shapes, colors, numbers, and any text. Do not guess what it means or represents. One sentence."* This produces objective visual descriptions without hallucinating game meaning.
 
 These descriptions are embedded into chunks and indexed, making visual elements searchable via normal RAG. When the agent retrieves a page, it sees the descriptions in the bbox listing and can reason about them.
 
@@ -252,9 +271,13 @@ Filtered by `game_id` on every query. Optionally filtered by `doc_tag`.
 ### File system
 
 ```
-data/games/{game_id}/
-├── docs/           # Stored document files (PDF, markdown)
-└── extracted/      # Cached Docling extraction JSON (one per document)
+data/
+├── games/{game_id}/
+│   ├── docs/           # Stored document files (PDF, markdown)
+│   └── extracted/      # Cached Docling extraction JSON (one per document)
+├── games.db            # SQLite (games, documents, qa_history, search domains)
+├── agent_checkpoints.db # LangGraph SqliteSaver checkpoints (per thread_id)
+└── qdrant/             # Qdrant collection storage (file-based)
 ```
 
 Extraction is cached — Docling only runs once per document unless forced. VLM re-enrichment overwrites the cached JSON and triggers reindexing.
@@ -288,7 +311,12 @@ Layout is adjustable (Chat / Equal / PDF presets). Citation clicks update the do
 
 ### Agent caching
 
-The compiled LangGraph agent is cached via `@st.cache_resource` keyed on `(game_id, model_name)`. Web search and page vision are always registered as tools but gated at call time via `agent_config` — toggling them mid-conversation takes effect on the next query without rebuilding the agent or losing chat history. Only changing the model resets the conversation.
+The compiled LangGraph agent is cached via `@st.cache_resource` keyed on `(game_id, game_name, model_name)` — Streamlit keys cache entries on every argument. Within a cached agent instance, runtime sidebar controls flow through the mutable `agent_config` dict that `build_agent` returns:
+
+- `agent_config["top_k"]` — read by `search_rulebook` at call time, so the sidebar slider tunes retrieval depth per query without recompiling.
+- `agent_config["enable_web_search"]` and `agent_config["enable_page_vision"]` — drive the dynamic tool binding described in the Agent section. Toggling them mid-conversation takes effect on the next query.
+
+Only changing the model resets the conversation. Game switches clear chat state but reuse the cached agent if it was built before.
 
 ---
 
@@ -305,6 +333,12 @@ All configuration lives in `config.py`. Key settings:
 | `RERANK_PROVIDER` | cohere | Cross-encoder re-ranking |
 | `VLM_DEFAULT_PRESET` | qwen (3B) | Local VLM for picture descriptions |
 | `PAGE_VISION_MODEL` | claude-sonnet-4-6 | VLM for page analysis tool |
+
+---
+
+## Observability
+
+LangSmith tracing is wired in at import time — `config.py` sets `LANGCHAIN_PROJECT="boardgame_agent"` so every LangChain/LangGraph call (LLM invocations, tool calls, graph nodes) is grouped under that project automatically. Setting `LANGCHAIN_TRACING_V2=true` and `LANGCHAIN_API_KEY=...` in `.env` enables the trace upload; without those, the project name is harmless. The web search tool is additionally annotated with `@traceable` so its inputs/outputs surface clearly in the trace tree.
 
 ---
 

@@ -1,128 +1,71 @@
 # Board Game Rules Agent
 
-A local AI assistant that answers board game rules questions with **cited, highlighted** references to the official rulebook — built for fast lookups during actual gameplay.
+*A local AI assistant that answers board game rules questions with cited, highlighted references to the official rulebook — built for fast lookups during actual gameplay.*
+
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg) ![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)
+
+<!-- TODO: add screenshot here. Suggested shot: chat panel showing an answer with citation chips, alongside the PDF viewer with the cited region highlighted. -->
 
 Ask a question, get an answer with clickable citations that highlight the exact source text in the PDF viewer. The agent cross-references multiple documents when needed and keeps digging until it can ground every claim.
 
-## Quick start
+## Quickstart
 
 Prerequisites:
-- [uv](https://docs.astral.sh/uv/getting-started/installation/): `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- [Ollama](https://ollama.com/download): download the macOS app, then `ollama pull qwen3-embedding`
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) — `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- [Ollama](https://ollama.com/download) — for local embeddings: `ollama pull qwen3-embedding`
 - A [Together API](https://www.together.ai/) key (free tier works — default LLM provider)
 
 ```bash
 cd boardgame_agent
 uv sync
 cp .env.example .env
-# Edit .env and add your TOGETHER_API_KEY
+# edit .env and add TOGETHER_API_KEY
 boardgame-agent
 ```
 
 ### Optional API keys
 
-Add these to `.env` for additional features:
-
 | Key | Purpose | Free tier? |
 |-----|---------|------------|
-| `TOGETHER_API_KEY` | Default LLM provider | No |
-| `ANTHROPIC_API_KEY` | Claude models (agent or VLM) | No |
+| `ANTHROPIC_API_KEY` | Claude models (agent or vision) | No |
 | `OPENAI_API_KEY` | GPT-4o models | No |
 | `COHERE_API_KEY` | Re-ranking (improves retrieval accuracy) | Yes (1k calls/month) |
 | `TAVILY_API_KEY` | Web search fallback | Yes |
 
----
+## Features
+
+- **Cited, clickable answers.** Every claim links to a paragraph in the source PDF, highlighted in the viewer.
+- **Cross-references on its own.** When a supplement points back to a rulebook section, the agent looks it up before answering instead of guessing.
+- **Reads icons and diagrams.** A local vision model describes each picture in the rulebook at upload time, so visual elements are searchable alongside the text.
+- **Page vision on demand.** For icon-heavy pages where text isn't enough, the agent can visually analyze the rendered page to figure out what to search for next.
+- **Web search fallback.** Falls back to trusted domains you configure per game (default: BoardGameGeek) when the indexed documents come up short.
+- **Answer history.** Rate answers with thumbs up/down — accepted ones are reused so the agent stays consistent on similar questions.
+- **Supports PDF and Markdown.** PDFs get bbox-precise citation highlighting; Markdown gets text-based highlighting.
 
 ## Setting up a game
 
-### 1. Create a game
+**1. Create a game.** Click *Add new game* in the sidebar.
 
-Click **Add new game** in the sidebar. The new game is auto-selected.
+**2. Upload documents.** Add the rulebook PDF and any supplements (FAQ, player aids, icon references, logbooks). Each document gets:
+- a **tag** auto-suggested from the filename — editable any time, no reindexing
+- an optional **description** that helps the agent decide when to search this document
 
-### 2. Upload documents
+**3. Choose processing options.** *Enrich pictures with VLM descriptions* is on by default and makes icons searchable. Uncheck it for text-only rulebooks where pictures don't carry meaning.
 
-Upload your rulebook PDF and any supplemental documents (FAQ, player aids, icon references, logbooks). Each document gets:
+**4. Ask questions.** Type a rules question in the chat. Click any citation chip to view the source page with the cited region highlighted.
 
-- **Tag** — auto-suggested from the filename (e.g., "Icon-Overview.pdf" suggests `icon_reference`). Edit anytime — changes apply instantly, no reindexing.
-- **Description** — optional, helps the agent decide when to search this document. Example: "Contains all 50 mission criteria and special rules per mission."
+Per-document settings (description, tag, two-page-spread splitting, re-running picture enrichment) are available in the sidebar under *Options*.
 
-### 3. Processing options (on by default)
+## Built with
 
-When uploading PDFs, you can enable:
+LangGraph · Qdrant · Docling · Streamlit · Ollama · Apple MLX
 
-- **Enrich pictures with VLM descriptions** (on by default) — a local vision model (Qwen2.5-VL 3B via MLX) describes every icon, symbol, and diagram in the PDF. This makes visual elements searchable. Uncheck for text-only rulebooks where icons aren't important.
+LLM providers are pluggable through LangChain — currently wired to Anthropic, Together, and OpenAI. Map model IDs to providers in `config.py` and switch from the sidebar.
 
-This can be done later from the sidebar if you skip it during upload.
+## Documentation
 
-### 4. Ask questions
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the agent reasons, the retrieval pipeline, design decisions.
 
-Type a rules question in the chat. The agent searches, cross-references when needed, and returns a cited answer. Click any **citation chip** to view the source with highlighted text in the PDF viewer.
+## License
 
----
-
-## How the agent reasons
-
-The agent follows a natural reasoning loop — the same process a human uses when looking up a rule:
-
-1. **Search** the most relevant document for the question
-2. **Evaluate** — "Can I fully answer now? Is there anything in these results I don't understand?"
-3. **If yes** — submit the answer with citations immediately
-4. **If no** — search for the unknown terms, icons, or mechanics, then go back to step 2
-
-This means simple questions ("How many cards do you draw?") are answered in one search. Complex questions that involve icons, cross-document references, or interacting rules trigger multiple searches automatically — the agent keeps going until every part of the answer is grounded.
-
-### Cross-referencing
-
-When the agent finds information in a supplement or logbook that references game mechanics defined in the rulebook, it automatically cross-references the rulebook before answering. The final answer cites all sources that contributed.
-
----
-
-## Features
-
-### Citations
-
-Every answer includes clickable citation chips showing document name and page number. Click a citation to view the PDF page with highlighted bounding boxes around the cited text. Citations come from text retrieval — the agent must find and cite the actual rules, not guess.
-
-### Re-ranking
-
-After hybrid retrieval (dense + sparse vectors with RRF fusion), results are re-ranked with a cross-encoder for higher precision. Default: Cohere Rerank API (free tier). Falls back to local FastEmbed if no API key is set.
-
-### Web search
-
-When all indexed documents have been exhausted and the answer is still unclear, the agent can search the web. Restricted to trusted domains you configure per game (default: boardgamegeek.com). Requires a Tavily API key.
-
-### Answer history
-
-Rate answers with thumbs up/down. Accepted answers feed into the `get_past_answers` tool so the agent stays consistent with prior verified rulings.
-
-### Page vision
-
-The agent can visually analyze a page when text extraction doesn't capture enough (icon-heavy pages, complex layouts). The vision model helps the agent understand what to search for next — it doesn't replace text retrieval.
-
----
-
-## Document options
-
-These are available per document in the sidebar under **Options**:
-
-- **Description** — helps the agent choose which document to search
-- **Two-page spreads** — splits landscape pages into left/right halves
-- **Picture enrichment** — re-run VLM description with a different model
-- **Tag** — editable inline, changes apply instantly
-
----
-
-## LLM providers
-
-Models and their providers are configured in `config.py` under `MODEL_OPTIONS`. Map each model ID to `"together"`, `"anthropic"`, or `"openai"`. Only add API keys for the providers you use. Switch models from the sidebar dropdown — changing the model resets the conversation.
-
-## Embeddings
-
-Dense vectors via Ollama (default `qwen3-embedding`, 4096-d). Sparse vectors via FastEmbed SPLADE++. Results fused with Qdrant-native RRF hybrid search. Change `OLLAMA_EMBED_MODEL` in `config.py` and click **Rebuild index** in the sidebar.
-
-Ollama launches automatically if installed but not running.
-
-## Supported document formats
-
-- **PDF** — parsed by Docling with bounding-box citations and highlighted page rendering
-- **Markdown** (.md) — parsed by heading structure with text-based citation highlighting
+MIT

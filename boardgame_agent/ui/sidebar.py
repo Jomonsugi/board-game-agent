@@ -487,10 +487,8 @@ def _remove_document(game_id: str, doc_name: str) -> None:
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
     if cache_path.exists():
         cache_path.unlink()
-    # Remove stored document (check both old pdfs/ dir and new docs/ dir)
-    for subdir in ("docs", "pdfs"):
-        for ext in _SUPPORTED_EXTENSIONS:
-            doc_file = DATA_DIR / "games" / game_id / subdir / f"{doc_name}{ext}"
-            if doc_file.exists():
-                doc_file.unlink()
+    for ext in _SUPPORTED_EXTENSIONS:
+        doc_file = DATA_DIR / "games" / game_id / "docs" / f"{doc_name}{ext}"
+        if doc_file.exists():
+            doc_file.unlink()
     st.toast(f"Removed {doc_name}")
