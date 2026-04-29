@@ -9,6 +9,15 @@ Layout
 
 from __future__ import annotations
 
+import logging
+
+# Suppress transformers v5 deprecation spam (one warning per image-processor model).
+# These are routed through the logging module, not warnings.warn, so a warnings filter
+# does nothing. Filter must be installed before any import that pulls in transformers.
+logging.getLogger("transformers").addFilter(
+    lambda record: "Accessing `" not in record.getMessage()
+)
+
 import uuid
 
 import streamlit as st

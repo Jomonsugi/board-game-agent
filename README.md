@@ -16,11 +16,10 @@ Prerequisites:
 - A [Together API](https://www.together.ai/) key (free tier works — default LLM provider)
 
 ```bash
-cd boardgame_agent
 uv sync
 cp .env.example .env
 # edit .env and add TOGETHER_API_KEY
-boardgame-agent
+uv run boardgame-agent
 ```
 
 ### Optional API keys
