@@ -144,6 +144,10 @@ def retrieve_pages(
 def format_pages_for_llm(points: list[Any]) -> str:
     """Convert Qdrant points into a structured string the LLM can cite from.
 
+    Points sharing the same (doc_name, page_num) are coalesced into one
+    section with a unified bbox list, so the LLM sees a single view of each
+    page even when retrieval returns multiple chunks from it.
+
     Format:
         === DOCUMENT: <doc_name> | PAGE <page_num> ===
         <page text>
@@ -154,19 +158,40 @@ def format_pages_for_llm(points: list[Any]) -> str:
     if not points:
         return "No relevant pages found in the indexed rulebooks."
 
-    sections: list[str] = []
+    # Group points by (doc_name, page_num), preserving first-seen order so the
+    # highest-ranked page stays first in the output.
+    groups: dict[tuple[str, Any], list[Any]] = {}
+    order: list[tuple[str, Any]] = []
     for point in points:
         p = point.payload
-        doc_name = p.get("doc_name", "unknown")
-        page_num = p.get("page_num", "?")
-        text = p.get("text", "")
-        bboxes = p.get("bboxes", [])
+        key = (p.get("doc_name", "unknown"), p.get("page_num", "?"))
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(point)
 
-        original_indices = p.get("original_bbox_indices", list(range(len(bboxes))))
+    sections: list[str] = []
+    for doc_name, page_num in order:
+        chunks = sorted(
+            groups[(doc_name, page_num)],
+            key=lambda pt: min(pt.payload.get("original_bbox_indices") or [0]),
+        )
+
+        text = "\n\n".join(pt.payload.get("text", "") for pt in chunks)
+
+        bbox_by_index: dict[int, dict] = {}
+        for pt in chunks:
+            pl = pt.payload
+            bboxes = pl.get("bboxes", [])
+            original_indices = pl.get("original_bbox_indices", list(range(len(bboxes))))
+            for i, b in enumerate(bboxes):
+                idx = original_indices[i]
+                if idx not in bbox_by_index and b.get("text"):
+                    bbox_by_index[idx] = b
+
         bbox_lines = "\n".join(
-            f'  [{original_indices[i]}] "{b.get("text", "")[:200]}"'
-            for i, b in enumerate(bboxes)
-            if b.get("text")
+            f'  [{idx}] "{b.get("text", "")[:200]}"'
+            for idx, b in sorted(bbox_by_index.items())
         )
 
         sections.append(
