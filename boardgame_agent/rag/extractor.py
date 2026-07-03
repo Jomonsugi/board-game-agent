@@ -23,6 +23,7 @@ from docling.datamodel.pipeline_options import (
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from boardgame_agent.config import DATA_DIR
+from boardgame_agent.rag.sanitize import sanitize_vlm_description
 
 # VLM prompt for picture descriptions at extraction time.
 # Deliberately asks for ONLY visual description — no interpretation of meaning.
@@ -90,6 +91,9 @@ def _extract_single_pdf(
                     item_text = meta.description.text or ""
                 elif getattr(item, "text", None):
                     item_text = str(item.text)
+                # Strip chat-template leakage; drop refusals ("I cannot see any
+                # image...") so VLM failure strings are never indexed.
+                item_text = sanitize_vlm_description(item_text)
             elif getattr(item, "text", None):
                 item_text = str(item.text)
 
@@ -221,6 +225,41 @@ def _split_spreads(
         doc.close()
 
 
+def _ensure_image_profile(pdf_path: Path, game_id: str, doc_name: str, force: bool = False) -> None:
+    """Profile the PDF's embedded images and cache the result as a sidecar.
+
+    Written to ``extracted/{doc_name}.images.json`` at ingestion time so the
+    icon-detection strategy is decided programmatically per document — never
+    something the user has to choose. Cheap (a PyMuPDF metadata scan), and
+    cached, so it adds nothing noticeable to ingestion. Read it back with
+    ``load_image_profile``.
+    """
+    profile_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.images.json"
+    if profile_path.exists() and not force:
+        return
+    from boardgame_agent.rag.probe_pdf_images import profile_pdf
+
+    try:
+        profile = profile_pdf(pdf_path)
+        profile_path.parent.mkdir(parents=True, exist_ok=True)
+        profile_path.write_text(json.dumps(profile), encoding="utf-8")
+        print(f"  {doc_name}: image profile → icon_strategy={profile['icon_strategy']}")
+    except Exception as e:  # noqa: BLE001 — profiling must never block ingestion
+        print(f"  {doc_name}: image profiling skipped ({type(e).__name__}: {e})")
+
+
+def load_image_profile(game_id: str, doc_name: str) -> dict[str, Any] | None:
+    """Load the cached ingestion-time image profile for a document.
+
+    Returns None for markdown docs and PDFs ingested before profiling existed
+    (re-ingesting or calling ``_ensure_image_profile`` backfills the latter).
+    """
+    profile_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.images.json"
+    if not profile_path.exists():
+        return None
+    return json.loads(profile_path.read_text(encoding="utf-8"))
+
+
 def get_or_extract(
     doc_path: Path,
     game_id: str,
@@ -236,8 +275,14 @@ def get_or_extract(
     Pass force=True to ignore the cache and re-extract.
     Pass has_spreads=True to split landscape spread pages into two logical pages.
     Pass vlm_preset (e.g. ``"qwen"``) to enable VLM picture descriptions.
+
+    PDFs are additionally image-profiled (see ``_ensure_image_profile``) so the
+    icon-detection strategy for each document is decided automatically.
     """
     cache_path = DATA_DIR / "games" / game_id / "extracted" / f"{doc_name}.json"
+
+    if doc_path.suffix.lower() == ".pdf":
+        _ensure_image_profile(doc_path, game_id, doc_name)
 
     if cache_path.exists() and not force:
         return json.loads(cache_path.read_text(encoding="utf-8"))

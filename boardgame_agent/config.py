@@ -79,6 +79,16 @@ PAGE_VISION_DPI: int = 150
 # ── Web Search (Tavily) ──────────────────────────────────────────────────────
 TAVILY_API_KEY: str | None = os.getenv("TAVILY_API_KEY")
 
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# LLM judge for answer correctness. Defaults to Claude when the key exists
+# (stronger judge, decorrelated from the Together-served agent models),
+# otherwise falls back to the default agent model.
+EVAL_JUDGE_MODEL: str = os.getenv(
+    "EVAL_JUDGE_MODEL",
+    "claude-sonnet-4-6" if ANTHROPIC_API_KEY else DEFAULT_MODEL,
+)
+EVAL_RUNS_DIR_NAME: str = "eval_runs"  # under DATA_DIR
+
 # ── Hardware ──────────────────────────────────────────────────────────────────
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
