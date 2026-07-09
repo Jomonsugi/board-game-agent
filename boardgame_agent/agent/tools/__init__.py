@@ -21,6 +21,7 @@ from .web_search import make_web_search_tool
 from .history import make_history_tool
 from .submit_answer import make_submit_answer_tool
 from .page_vision import make_page_vision_tool
+from .lookup_icon import make_lookup_icon_tool
 
 
 def make_all_tools(
@@ -46,5 +47,6 @@ def make_all_tools(
         make_submit_answer_tool(),
         make_page_vision_tool(game_id),
         make_web_search_tool(game_id, db_path, config=config),
+        make_lookup_icon_tool(game_id),
     ]
     return tools

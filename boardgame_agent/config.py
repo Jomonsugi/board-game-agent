@@ -76,6 +76,18 @@ FASTEMBED_RERANK_MODEL: str = "BAAI/bge-reranker-base"
 PAGE_VISION_MODEL: str = "claude-sonnet-4-6"
 PAGE_VISION_DPI: int = 150
 
+# ── Icon dictionary ──────────────────────────────────────────────────────────
+# Frontier VLM used by the icon-dictionary resolve stage (offline, per game,
+# on demand). Maps model id → provider, same convention as MODEL_OPTIONS.
+# Any vision-capable chat model works; add entries as needed.
+ICON_VLM_OPTIONS: dict[str, str] = {
+    "Qwen/Qwen2.5-VL-72B-Instruct": "together",
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": "together",
+    "claude-sonnet-4-6": "anthropic",
+    "gpt-4o": "openai",
+}
+ICON_RESOLVE_MODEL: str = os.getenv("ICON_RESOLVE_MODEL", "Qwen/Qwen2.5-VL-72B-Instruct")
+
 # ── Web Search (Tavily) ──────────────────────────────────────────────────────
 TAVILY_API_KEY: str | None = os.getenv("TAVILY_API_KEY")
 

@@ -131,7 +131,12 @@ def retro_sanitize_game(
 
     report: dict[str, int] = {}
     for cache_path in sorted(extracted_dir.glob("*.json")):
+        # Skip non-extraction sidecars (e.g. image-profile "*.images.json").
+        if cache_path.name.endswith(".images.json"):
+            continue
         pages = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(pages, list):
+            continue
         n = sanitize_pages(pages)
         report[cache_path.stem] = n
         if n and not dry_run:

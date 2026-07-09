@@ -278,7 +278,12 @@ def reindex_all() -> None:
     for extracted_dir in sorted(games_dir.glob("*/extracted")):
         game_id = extracted_dir.parent.name
         for json_path in sorted(extracted_dir.glob("*.json")):
+            # Skip non-extraction sidecars (e.g. image-profile "*.images.json").
+            if json_path.name.endswith(".images.json"):
+                continue
             pages = json.loads(json_path.read_text(encoding="utf-8"))
+            if not isinstance(pages, list):
+                continue
             chunks = chunk_by_sections(pages)
             print(f"  Indexing {game_id}/{json_path.stem} ({len(pages)} pages → {len(chunks)} chunks) …")
             build_index(chunks, client=client)
