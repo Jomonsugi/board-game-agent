@@ -23,9 +23,8 @@ OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
 # Maps model id → provider. Add Anthropic/OpenAI models here as needed.
 # Provider values: "together" | "anthropic" | "openai"
 MODEL_OPTIONS: dict[str, str] = {
-    "meta-llama/Llama-3.3-70B-Instruct-Turbo": "together",
+    "Qwen/Qwen3.5-9B": "together",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": "together",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": "together",
     "deepseek-ai/DeepSeek-V3.1": "together",
     "claude-sonnet-4-6": "anthropic",
     "gpt-4o": "openai",
@@ -66,7 +65,7 @@ VLM_DEFAULT_PRESET: str = "qwen"
 # "cohere" uses the Cohere Rerank API (free tier: 1k calls/month).
 # "fastembed" uses a local cross-encoder model via FastEmbed (no API key needed).
 # "none" disables re-ranking (only RRF fusion).
-RERANK_PROVIDER: str = "cohere"  # "cohere" | "fastembed" | "none"
+RERANK_PROVIDER: str = "fastembed"  # "cohere" | "fastembed" | "none"
 COHERE_API_KEY: str | None = os.getenv("COHERE_API_KEY")
 COHERE_RERANK_MODEL: str = "rerank-v3.5"
 FASTEMBED_RERANK_MODEL: str = "BAAI/bge-reranker-base"
@@ -83,6 +82,8 @@ PAGE_VISION_DPI: int = 150
 ICON_VLM_OPTIONS: dict[str, str] = {
     "Qwen/Qwen2.5-VL-72B-Instruct": "together",
     "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": "together",
+    "Qwen/Qwen3.5-9B": "together",
+    "moonshotai/Kimi-K2.6": "together",
     "claude-sonnet-4-6": "anthropic",
     "gpt-4o": "openai",
 }

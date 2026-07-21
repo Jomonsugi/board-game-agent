@@ -18,7 +18,9 @@ Usage:
 
 Metrics:
 - answer: correct / partial / incorrect (LLM judge, see judge.py)
-- citation_doc_hit: any predicted citation names a gold doc
+- citation_doc_hit: any predicted citation names a gold doc. Errored runs
+  (recursion limit, timeouts) count as citation misses, not as excluded —
+  "couldn't find it" is a real outcome and must drag the hit rates down.
 - citation_page_hit: any predicted citation matches a gold (doc, page) —
   a predicted page hits if it equals the gold citation's printed page_num
   OR its physical pdf_page (see schema.py for the two coordinates); this is
@@ -153,11 +155,17 @@ def run_evals(
                         "latency_s": round(time.time() - t0, 1),
                     }
                 except Exception as e:  # noqa: BLE001 — one bad question shouldn't kill the run
+                    # An errored run (recursion limit, timeout, API failure)
+                    # produced no citations, so it scores as a citation MISS
+                    # (False), not as excluded (None) — otherwise error-heavy
+                    # runs flatter doc/page hit rates. citation_match with an
+                    # empty prediction yields False when gold citations exist
+                    # and None only for examples that have no gold citations.
                     row = {
                         "id": ex.id, "game_id": ex.game_id, "question": ex.question,
                         "tags": ex.tags, "difficulty": ex.difficulty,
                         "verdict": "error", "error": f"{type(e).__name__}: {e}",
-                        "citation_doc_hit": None, "citation_page_hit": None,
+                        **citation_match(ex, []),
                         "latency_s": round(time.time() - t0, 1),
                     }
                 rows.append(row)

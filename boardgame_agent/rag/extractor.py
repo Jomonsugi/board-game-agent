@@ -317,12 +317,26 @@ def re_enrich_pictures(
     This re-runs the full Docling extraction (Docling's VLM is a pipeline
     stage, not a standalone post-processor). The cached JSON is overwritten.
     Returns the number of picture bboxes that received VLM descriptions.
+
+    PDF-only: documents extracted from markdown sources (docs/{doc_name}.md)
+    have no pictures to enrich and are skipped with a message (returns 0).
+    The same limitation applies to icon harvesting — icons only exist in PDFs.
     """
     from boardgame_agent.ui.pdf_panel import get_pdf_path
 
     pdf_path = get_pdf_path(game_id, doc_name)
     if pdf_path is None:
-        raise FileNotFoundError(f"PDF not found for {doc_name}")
+        md_path = DATA_DIR / "games" / game_id / "docs" / f"{doc_name}.md"
+        if md_path.exists():
+            print(
+                f"  Skipping '{doc_name}': markdown-sourced document — VLM picture "
+                f"enrichment and icon harvesting only apply to PDF documents."
+            )
+            return 0
+        raise FileNotFoundError(
+            f"PDF not found for '{doc_name}' (expected docs/{doc_name}.pdf; "
+            f"no docs/{doc_name}.md fallback either)"
+        )
 
     print(f"  Re-enriching {doc_name} with VLM preset '{vlm_preset}' …")
     pages = get_or_extract(

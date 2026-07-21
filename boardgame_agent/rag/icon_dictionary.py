@@ -968,6 +968,7 @@ def lookup(game_id: str, query: str, data_dir: Path | None = None) -> list[dict[
         like = f"%{query.strip()}%"
         rows = conn.execute(
             "SELECT * FROM icons WHERE meaning IS NOT NULL AND meaning != '' "
+            "AND status != 'rejected' "
             "AND (name LIKE ? OR meaning LIKE ?) ORDER BY n_instances DESC",
             (like, like),
         ).fetchall()
@@ -975,7 +976,7 @@ def lookup(game_id: str, query: str, data_dir: Path | None = None) -> list[dict[
             # Fall back to listing everything — small tables, better than nothing.
             rows = conn.execute(
                 "SELECT * FROM icons WHERE meaning IS NOT NULL AND meaning != '' "
-                "ORDER BY n_instances DESC"
+                "AND status != 'rejected' ORDER BY n_instances DESC"
             ).fetchall()
         return [dict(r) for r in rows]
     finally:

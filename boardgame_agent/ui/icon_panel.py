@@ -25,6 +25,7 @@ _STATUS_BADGES = {
     "tentative": "🟡 tentative",
     "unresolved": "🔴 unresolved",
     "new": "⚪ new",
+    "rejected": "🚫 rejected",
 }
 
 
@@ -88,7 +89,7 @@ def render_icon_dictionary_section(game_id: str, game_name: str) -> None:
         conn = connect(game_id)
         try:
             icons = conn.execute(
-                "SELECT * FROM icons ORDER BY "
+                "SELECT * FROM icons WHERE status != 'rejected' ORDER BY "
                 "CASE status WHEN 'unresolved' THEN 0 WHEN 'tentative' THEN 1 "
                 "WHEN 'resolved' THEN 2 WHEN 'new' THEN 3 ELSE 4 END, "
                 "n_instances DESC"
@@ -115,7 +116,7 @@ def render_icon_dictionary_section(game_id: str, game_name: str) -> None:
                 badge = _STATUS_BADGES.get(icon["status"], icon["status"])
                 if icon["def_doc"]:
                     badge += f" · defined in {icon['def_doc']} p.{icon['def_page']}"
-                col_a, col_b = col_fields.columns([3, 1])
+                col_a, col_b, col_c = col_fields.columns([3, 1, 1])
                 col_a.caption(badge)
 
                 edited = (name != (icon["name"] or "")) or (meaning != (icon["meaning"] or ""))
@@ -128,6 +129,18 @@ def render_icon_dictionary_section(game_id: str, game_name: str) -> None:
                         "UPDATE icons SET name = ?, meaning = ?, status = 'reviewed' "
                         "WHERE icon_id = ?",
                         (name.strip(), meaning.strip(), iid),
+                    )
+                    conn.commit()
+                    st.rerun()
+                if col_c.button(
+                    "Reject",
+                    key=f"icon_reject_{iid}",
+                    help="Not a real icon (art, blank crop, noise). Hidden from "
+                         "review, never applied to the index, never re-resolved.",
+                ):
+                    conn.execute(
+                        "UPDATE icons SET status = 'rejected' WHERE icon_id = ?",
+                        (iid,),
                     )
                     conn.commit()
                     st.rerun()

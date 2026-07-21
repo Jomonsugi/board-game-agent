@@ -60,8 +60,16 @@ def _rerank_fastembed(query: str, points: list[Any], top_k: int) -> list[Any]:
         return points
 
     documents = [p.payload.get("text", "") for p in points]
-    results = list(_fastembed_reranker.rerank(query, documents, top_k=top_k))
-    return [points[r["index"]] for r in results]
+    results = list(_fastembed_reranker.rerank(query, documents))
+    # fastembed's rerank() return shape differs across versions: newer
+    # versions yield one float score per document (in input order); older
+    # versions yielded {"index": ..., "score": ...} dicts sorted by score.
+    if results and isinstance(results[0], dict):
+        order = [int(r["index"]) for r in results]
+    else:
+        scores = [float(s) for s in results]
+        order = sorted(range(len(scores)), key=scores.__getitem__, reverse=True)
+    return [points[i] for i in order[:top_k]]
 
 
 def _rerank(query: str, points: list[Any], top_k: int) -> list[Any]:
