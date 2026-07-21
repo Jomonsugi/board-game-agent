@@ -1,27 +1,33 @@
 """Headless eval runner.
 
-Runs every dataset example through the agent graph (fresh thread per
-question — no conversation bleed), judges answers with the configurable LLM
-judge, computes citation-match metrics, and writes results + a summary to
+Loads the unified dataset (all games in one file, see schema.py), optionally
+filters to a subset of games and/or tags, runs every example through the
+agent graph (fresh thread per question — no conversation bleed, one agent
+built per game), judges answers with the configurable LLM judge, computes
+citation-match metrics, and writes results + a summary to
 ``data/eval_runs/{timestamp}/``.
 
 Usage:
-    python -m boardgame_agent.evals.runner --game the_crew__the_quest_for_planet_nine
-    python -m boardgame_agent.evals.runner --game <id> --tags icon           # subset
-    python -m boardgame_agent.evals.runner --game <id> --model claude-sonnet-4-6
-    python -m boardgame_agent.evals.runner --game <id> --include-unreviewed
-    python -m boardgame_agent.evals.runner --game <id> --langsmith           # sync dataset + traces
+    python -m boardgame_agent.evals.runner                                  # all games
+    python -m boardgame_agent.evals.runner --games the_crew__the_quest_for_planet_nine
+    python -m boardgame_agent.evals.runner --games gloomhaven sky_team      # subset of games
+    python -m boardgame_agent.evals.runner --tags icon                      # subset by tag
+    python -m boardgame_agent.evals.runner --model claude-sonnet-4-6
+    python -m boardgame_agent.evals.runner --include-unreviewed
+    python -m boardgame_agent.evals.runner --langsmith                      # sync dataset + traces
 
 Metrics:
 - answer: correct / partial / incorrect (LLM judge, see judge.py)
 - citation_doc_hit: any predicted citation names a gold doc
 - citation_page_hit: any predicted citation matches a gold (doc, page) —
-  this is the metric the bbox citation system uniquely enables; track it
-  separately per tag (icon questions live or die on it)
+  a predicted page hits if it equals the gold citation's printed page_num
+  OR its physical pdf_page (see schema.py for the two coordinates); this is
+  the metric the bbox citation system uniquely enables. Tracked per tag —
+  icon and multi-hop questions live or die on it.
 
 LangSmith: per-run traces are captured automatically whenever
 ``LANGCHAIN_TRACING_V2=true`` (already wired in config.py). ``--langsmith``
-additionally syncs the dataset to a LangSmith dataset named
+additionally syncs each game's examples to a LangSmith dataset named
 ``boardgame-{game_id}`` so runs can be inspected against examples in the UI.
 """
 
@@ -35,19 +41,24 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from boardgame_agent.evals.schema import EvalExample, load_dataset
-
-DATASETS_DIR = Path(__file__).parent / "datasets"
+from boardgame_agent.evals.schema import DEFAULT_DATASET, EvalExample, load_dataset
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 
 def citation_match(example: EvalExample, predicted_citations: list) -> dict:
-    """Doc-level and page-level citation hits against gold citations."""
+    """Doc-level and page-level citation hits against gold citations.
+
+    A predicted (doc, page) is a page hit if the page equals either page
+    coordinate (printed ``page_num`` or physical ``pdf_page``) of a gold
+    citation for the same doc.
+    """
     if not example.gold_citations:
         return {"citation_doc_hit": None, "citation_page_hit": None}
     gold_docs = {g.doc_name for g in example.gold_citations}
-    gold_pages = {(g.doc_name, g.page_num) for g in example.gold_citations}
+    gold_pages = {
+        (g.doc_name, p) for g in example.gold_citations for p in g.page_candidates()
+    }
     pred_docs = {c.doc_name for c in predicted_citations}
     pred_pages = {(c.doc_name, c.page_num) for c in predicted_citations}
     return {
@@ -58,10 +69,17 @@ def citation_match(example: EvalExample, predicted_citations: list) -> dict:
 
 # ── Runner ────────────────────────────────────────────────────────────────────
 
+def _display_name(game_id: str) -> str:
+    # "the_crew__the_quest_for_planet_nine" -> "The Crew: The Quest For Planet Nine"
+    # "dungeons___dragons" (3+ underscores: a swallowed '&' etc.) -> "Dungeons Dragons"
+    import re
+    named = re.sub(r"_{3,}", " ", game_id).replace("__", ": ").replace("_", " ")
+    return named.title()
+
+
 def run_evals(
-    game_id: str,
-    game_name: str,
-    dataset_path: Path,
+    dataset_path: Path = DEFAULT_DATASET,
+    games: list[str] | None = None,
     model_name: str | None = None,
     judge_model: str | None = None,
     tags: list[str] | None = None,
@@ -74,7 +92,7 @@ def run_evals(
     from boardgame_agent.config import DATA_DIR, DEFAULT_MODEL, EVAL_JUDGE_MODEL, EVAL_RUNS_DIR_NAME
     from boardgame_agent.evals.judge import build_judge
 
-    examples = load_dataset(dataset_path)
+    examples = load_dataset(dataset_path, games=games)
     if not include_unreviewed:
         skipped = sum(1 for e in examples if e.needs_human_review)
         examples = [e for e in examples if not e.needs_human_review]
@@ -89,12 +107,16 @@ def run_evals(
 
     model_name = model_name or DEFAULT_MODEL
     judge_model = judge_model or EVAL_JUDGE_MODEL
-    print(f"Running {len(examples)} example(s) | agent={model_name} | judge={judge_model}")
+    game_ids = sorted({e.game_id for e in examples})
+    print(
+        f"Running {len(examples)} example(s) across {len(game_ids)} game(s) "
+        f"| agent={model_name} | judge={judge_model}"
+    )
 
     if langsmith:
-        _sync_langsmith_dataset(game_id, examples)
+        for gid in game_ids:
+            _sync_langsmith_dataset(gid, [e for e in examples if e.game_id == gid])
 
-    compiled, _llm, _client, _config = build_agent(game_id, game_name, model_name)
     judge = build_judge(judge_model)
 
     run_dir = DATA_DIR / EVAL_RUNS_DIR_NAME / datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -102,39 +124,48 @@ def run_evals(
     results_path = run_dir / "results.jsonl"
 
     rows: list[dict] = []
+    done = 0
     with open(results_path, "w", encoding="utf-8") as f:
-        for i, ex in enumerate(examples, 1):
-            t0 = time.time()
-            try:
-                qa = run_query(compiled, game_id, ex.question, thread_id=f"eval-{uuid.uuid4()}")
-                verdict = judge(ex.question, ex.gold_answer, qa.answer)
-                row = {
-                    "id": ex.id,
-                    "question": ex.question,
-                    "tags": ex.tags,
-                    "agent_answer": qa.answer,
-                    "gold_answer": ex.gold_answer,
-                    "verdict": verdict.verdict,
-                    "judge_reasoning": verdict.reasoning,
-                    "predicted_citations": [c.model_dump() for c in qa.citations],
-                    "gold_citations": [g.model_dump() for g in ex.gold_citations],
-                    **citation_match(ex, qa.citations),
-                    "confidence": qa.confidence,
-                    "latency_s": round(time.time() - t0, 1),
-                }
-            except Exception as e:  # noqa: BLE001 — one bad question shouldn't kill the run
-                row = {
-                    "id": ex.id, "question": ex.question, "tags": ex.tags,
-                    "verdict": "error", "error": f"{type(e).__name__}: {e}",
-                    "citation_doc_hit": None, "citation_page_hit": None,
-                    "latency_s": round(time.time() - t0, 1),
-                }
-            rows.append(row)
-            f.write(json.dumps(row, ensure_ascii=False) + "\n")
-            f.flush()
-            print(f"  [{i}/{len(examples)}] {ex.id}: {row['verdict']}"
-                  + (f" (page_hit={row['citation_page_hit']})"
-                     if row.get("citation_page_hit") is not None else ""))
+        for gid in game_ids:
+            game_examples = [e for e in examples if e.game_id == gid]
+            print(f"\n── {gid} ({len(game_examples)} example(s)) " + "─" * 20)
+            compiled, _llm, _client, _config = build_agent(gid, _display_name(gid), model_name)
+            for ex in game_examples:
+                done += 1
+                t0 = time.time()
+                try:
+                    qa = run_query(compiled, gid, ex.question, thread_id=f"eval-{uuid.uuid4()}")
+                    verdict = judge(ex.question, ex.gold_answer, qa.answer)
+                    row = {
+                        "id": ex.id,
+                        "game_id": ex.game_id,
+                        "question": ex.question,
+                        "tags": ex.tags,
+                        "difficulty": ex.difficulty,
+                        "agent_answer": qa.answer,
+                        "gold_answer": ex.gold_answer,
+                        "verdict": verdict.verdict,
+                        "judge_reasoning": verdict.reasoning,
+                        "predicted_citations": [c.model_dump() for c in qa.citations],
+                        "gold_citations": [g.model_dump() for g in ex.gold_citations],
+                        **citation_match(ex, qa.citations),
+                        "confidence": qa.confidence,
+                        "latency_s": round(time.time() - t0, 1),
+                    }
+                except Exception as e:  # noqa: BLE001 — one bad question shouldn't kill the run
+                    row = {
+                        "id": ex.id, "game_id": ex.game_id, "question": ex.question,
+                        "tags": ex.tags, "difficulty": ex.difficulty,
+                        "verdict": "error", "error": f"{type(e).__name__}: {e}",
+                        "citation_doc_hit": None, "citation_page_hit": None,
+                        "latency_s": round(time.time() - t0, 1),
+                    }
+                rows.append(row)
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+                f.flush()
+                print(f"  [{done}/{len(examples)}] {ex.id}: {row['verdict']}"
+                      + (f" (page_hit={row['citation_page_hit']})"
+                         if row.get("citation_page_hit") is not None else ""))
 
     summary = _summarize(rows, model_name, judge_model, dataset_path)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
@@ -162,12 +193,18 @@ def _summarize(rows: list[dict], model_name: str, judge_model: str, dataset_path
         }
 
     all_tags = sorted({t for r in rows for t in r.get("tags", [])})
+    all_games = sorted({r["game_id"] for r in rows})
+    all_difficulties = [d for d in ("easy", "moderate", "hard")
+                        if any(r.get("difficulty") == d for r in rows)]
     return {
         "model": model_name,
         "judge_model": judge_model,
         "dataset": str(dataset_path),
         "overall": block(rows),
+        "by_game": {g: block([r for r in rows if r["game_id"] == g]) for g in all_games},
         "by_tag": {t: block([r for r in rows if t in r.get("tags", [])]) for t in all_tags},
+        "by_difficulty": {d: block([r for r in rows if r.get("difficulty") == d])
+                          for d in all_difficulties},
         "mean_latency_s": rate(rows, "latency_s"),
     }
 
@@ -179,9 +216,10 @@ def _print_summary(s: dict) -> None:
           f"incorrect={o['incorrect']}  errors={o['error']}")
     print(f"  correct_rate={o['correct_rate']}  "
           f"doc_hit={o['citation_doc_hit_rate']}  page_hit={o['citation_page_hit_rate']}")
-    for tag, b in s["by_tag"].items():
-        print(f"  [{tag:>10}] n={b['n']:<3} correct_rate={b['correct_rate']}  "
-              f"page_hit={b['citation_page_hit_rate']}")
+    for label, section in (("game", "by_game"), ("tag", "by_tag"), ("difficulty", "by_difficulty")):
+        for key, b in s[section].items():
+            print(f"  [{label}:{key}] n={b['n']:<3} correct_rate={b['correct_rate']}  "
+                  f"page_hit={b['citation_page_hit_rate']}")
 
 
 def _sync_langsmith_dataset(game_id: str, examples: list[EvalExample]) -> None:
@@ -207,7 +245,8 @@ def _sync_langsmith_dataset(game_id: str, examples: list[EvalExample]) -> None:
                 outputs=[{"gold_answer": e.gold_answer,
                           "gold_citations": [g.model_dump() for g in e.gold_citations]}
                          for e in new],
-                metadata=[{"example_id": e.id, "tags": e.tags} for e in new],
+                metadata=[{"example_id": e.id, "game_id": e.game_id,
+                           "tags": e.tags, "difficulty": e.difficulty} for e in new],
             )
         print(f"LangSmith: dataset '{name}' synced ({len(new)} new example(s))")
     except Exception as e:  # noqa: BLE001 — never fail an eval run on upload
@@ -216,10 +255,10 @@ def _sync_langsmith_dataset(game_id: str, examples: list[EvalExample]) -> None:
 
 def _main() -> None:
     parser = argparse.ArgumentParser(description="Run the offline eval suite.")
-    parser.add_argument("--game", required=True, help="game_id (folder under data/games/)")
-    parser.add_argument("--game-name", default=None, help="Display name (defaults to game_id)")
+    parser.add_argument("--games", nargs="*", default=None,
+                        help="game_id(s) to run (folders under data/games/); default: all")
     parser.add_argument("--dataset", default=None,
-                        help=f"Dataset path (default: {DATASETS_DIR}/{{game}}.jsonl)")
+                        help=f"Dataset path (default: {DEFAULT_DATASET})")
     parser.add_argument("--model", default=None, help="Agent model (default: config DEFAULT_MODEL)")
     parser.add_argument("--judge-model", default=None, help="Judge model (default: config EVAL_JUDGE_MODEL)")
     parser.add_argument("--tags", nargs="*", default=None, help="Only run examples with these tags")
@@ -229,14 +268,13 @@ def _main() -> None:
     parser.add_argument("--langsmith", action="store_true", help="Sync dataset to LangSmith")
     args = parser.parse_args()
 
-    dataset_path = Path(args.dataset) if args.dataset else DATASETS_DIR / f"{args.game}.jsonl"
+    dataset_path = Path(args.dataset) if args.dataset else DEFAULT_DATASET
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
 
     run_evals(
-        game_id=args.game,
-        game_name=args.game_name or args.game.replace("_", " ").title(),
         dataset_path=dataset_path,
+        games=args.games,
         model_name=args.model,
         judge_model=args.judge_model,
         tags=args.tags,
