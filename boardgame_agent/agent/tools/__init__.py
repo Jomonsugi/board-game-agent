@@ -21,6 +21,7 @@ from .web_search import make_web_search_tool
 from .history import make_history_tool
 from .submit_answer import make_submit_answer_tool
 from .page_vision import make_page_vision_tool
+from .lookup_icon import make_lookup_icon_tool
 
 
 def make_all_tools(
@@ -39,7 +40,14 @@ def make_all_tools(
     via ``config["enable_web_search"]`` and ``config["enable_page_vision"]``.
     This lets the user toggle them mid-conversation without rebuilding the
     agent or losing chat history.
+
+    lookup_icon is registered only when the game actually has a built icon
+    dictionary — offering it without one just wastes a tool call on a
+    "no dictionary" message. (Build a dictionary mid-session and it appears
+    on the next agent rebuild.)
     """
+    from boardgame_agent.rag.icon_dictionary import has_dictionary
+
     tools: list[BaseTool] = [
         make_rag_tool(game_id, qdrant_client, config, db_path=db_path),
         make_history_tool(game_id, db_path),
@@ -47,4 +55,6 @@ def make_all_tools(
         make_page_vision_tool(game_id),
         make_web_search_tool(game_id, db_path, config=config),
     ]
+    if has_dictionary(game_id):
+        tools.append(make_lookup_icon_tool(game_id))
     return tools

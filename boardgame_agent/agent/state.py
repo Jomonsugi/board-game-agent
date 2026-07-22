@@ -17,3 +17,6 @@ class AgentState(TypedDict):
     final_answer: Optional[dict[str, Any]]
     # Set by the planner node when the answer is already in conversation context.
     plan: Optional[list[str]]
+    # Number of agent (LLM) turns taken this query. Used to force a graceful
+    # best-effort answer before the hard recursion limit trips.
+    agent_turns: Optional[int]

@@ -223,6 +223,11 @@ def render_sidebar() -> tuple[str | None, str | None, str, int, bool, bool]:
         else:
             st.caption("No documents indexed yet.")
 
+        # ── Icon dictionary (optional, per game) ─────────────────────────────
+        if docs:
+            from boardgame_agent.ui.icon_panel import render_icon_dictionary_section
+            render_icon_dictionary_section(selected_game_id, selected_game_name)
+
         st.divider()
 
         # Upload new documents

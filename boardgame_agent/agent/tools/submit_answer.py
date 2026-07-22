@@ -42,17 +42,21 @@ class SubmitAnswerInput(BaseModel):
 
     answer: str = Field(description="Your complete answer to the user's question")
     citations: list[DocCitation] = Field(
-        default_factory=list,
-        description="Document citations grounding factual claims. Include doc_name, page_num, and bbox_indices.",
+        description=(
+            "REQUIRED. Document citations grounding every factual claim — "
+            "include doc_name, page_num, and bbox_indices for each page you "
+            "used. Pass an empty list ONLY if the answer genuinely uses no "
+            "indexed document (e.g. a clarifying question)."
+        ),
     )
     web_sources: Optional[list[WebSourceCitation]] = Field(
         default=None,
         description="Web sources used. Include url and a one-sentence finding for each.",
     )
+    # NOTE: no ge/le here — numeric min/max constraints are rejected by
+    # Anthropic strict tool schemas. The tool body clamps to [0, 1] instead.
     confidence: float = Field(
         default=1.0,
-        ge=0.0,
-        le=1.0,
         description="Your confidence in this answer (0-1). Use 1.0 when every claim is cited, lower when you had to infer.",
     )
 
@@ -95,15 +99,15 @@ def make_submit_answer_tool():
     @tool(args_schema=SubmitAnswerInput)
     def submit_answer(
         answer: str,
-        citations: list[dict] | None = None,
+        citations: list[dict],
         web_sources: list[dict] | None = None,
         confidence: float = 1.0,
     ) -> str:
         """Submit your final answer with citations to display in the UI.
 
         Call this tool ONCE when you have gathered enough information to answer
-        the user's question. Pass your answer text, document citations with
-        bounding-box indices, any web sources used, and your confidence level.
+        the user's question. The citations field is required: cite every
+        document page your answer relies on (doc_name, page_num, bbox_indices).
         """
         raw_citations = [
             c if isinstance(c, dict) else c.model_dump() if hasattr(c, "model_dump") else dict(c)

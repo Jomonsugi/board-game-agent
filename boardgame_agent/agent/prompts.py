@@ -24,8 +24,11 @@ def build_system_prompt(
     tools_lines.append(
         "- view_page(doc_name, page_num, question): visually analyze a page to "
         "understand its layout or icons. Use when you found a page but can't "
-        "understand it from text alone. This helps you know WHAT to search for "
-        "next — always follow up with search_rulebook to find citable rules."
+        "understand it from text alone (icon-borne numbers, tokens, and layout "
+        "often exist ONLY in the page image). If the USER names a page "
+        "(including in an earlier message, e.g. answering your clarifying "
+        "question), view that page directly. Follow up with search_rulebook "
+        "for citable rule text where possible."
     )
     tools_lines.append(
         "- search_web(query): search the web for community clarifications, "
@@ -67,9 +70,24 @@ def build_system_prompt(
 
     # ── Web search guidance ───────────────────────────────────────────────
     web_search_guidance = """
-Web search:
-- Use search_web ONLY after exhausting the indexed documents.
-- When using web search, summarize what you found and cite the source URL."""
+When retrieval isn't enough — exhaust the cheap route first:
+- The indexed documents almost always contain the answer. When a search comes
+  back empty or off-target, the usual cause is the query wording, NOT a missing
+  rule. Before concluding the documents don't have it, retrieve exhaustively:
+  retry with different wording, narrower/more specific terms, the exact game
+  term or icon name, and a different source tag; and use every retrieval tool
+  available to you (e.g. the icon dictionary for symbols). Exhaustive retrieval
+  solves almost every question on its own.
+- Escalate beyond retrieval ONLY when exhaustive retrieval genuinely cannot
+  surface the information — and prefer the cheaper escalation first:
+  - view_page(doc_name, page_num, ...): when you have located the right page but
+    text retrieval can't extract what's on it (icons, dense tables, layout),
+    look at it visually, then search_rulebook again for the citable text.
+  - search_web(query): a LAST resort, and only for information that is genuinely
+    not in any indexed document (community edge cases, errata). Summarize what
+    you found and cite the source URL.
+- Reaching for web search or view_page before retrieval is exhausted is a
+  mistake — it is slower and less authoritative than the game's own documents."""
 
     # ── Skip-retrieval marker from planner ────────────────────────────────
     skip_section = ""
@@ -109,19 +127,27 @@ definition, or use view_page if available.
 Once you find the missing definition, combine it with what you already have \
 and call submit_answer.
 
-When a supplement or logbook page references mechanics from the rulebook, \
-search the rulebook for those mechanics, then answer citing both sources.
+When a supplement, scenario book, or reference page references mechanics from \
+the rulebook, search the rulebook for those mechanics, then answer citing both \
+sources.
 
 Do not assume you know what a game term means — retrieve its definition. \
 After finding a rule, check for exceptions ("however," "except," "unless"). \
 Specific beats general.
 
-IMPORTANT — do not spiral:
+IMPORTANT — search efficiently, but do not give up early:
 - Never repeat the exact same query.
 - Do not keep searching for the same information with different wording once \
 you have found it. Finding the same rule twice does not make it more correct.
-- If after 4 searches you have not found what you need, call submit_answer \
-with what you have and clearly state what you could not verify.
+- If retrieval keeps missing, do NOT surrender — change your approach: vary the \
+wording and terms, try the exact game term or icon name, search a different \
+source, and use every retrieval tool available. Exhaust retrieval before \
+anything else.
+- Only when exhaustive retrieval still cannot surface the needed rule should \
+you escalate — to view_page if you know the right page, or to search_web as a \
+last resort (see "When retrieval isn't enough" above).
+- Never submit guesses or unverified rules as the answer. Every ruling you \
+give must be grounded in a retrieved source.
 - Be concise — players are mid-game and need quick, clear rulings.
 
 Submitting your answer:

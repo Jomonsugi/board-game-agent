@@ -41,7 +41,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ipykernel>=7.1.0"]
+dev = ["ipykernel>=7.1.0", "pytest>=8.0.0"]
 
 [project.scripts]
 boardgame-agent = "boardgame_agent.__main__:main"

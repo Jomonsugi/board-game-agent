@@ -48,6 +48,44 @@ _PROVIDER_KEY_MAP = {
     "openai": ("OPENAI_API_KEY", lambda: OPENAI_API_KEY),
 }
 
+# Agent-turn budget. On the Nth turn the agent is forced to answer (submit_answer
+# only) instead of searching further; _RECURSION_LIMIT is the hard backstop and
+# must leave room for planner + this many agent/tools round-trips (~2 steps each)
+# plus the forced turn and finalize.
+_SOFT_TURN_CAP = 14
+_RECURSION_LIMIT = 40
+
+# Digest budgets for already-seen tool outputs (see call_agent).
+_DIGEST_PER_SECTION = 400
+_DIGEST_TOTAL = 1600
+
+
+def _digest_tool_content(content: str) -> str:
+    """Shrink an already-seen tool output while keeping it citable.
+
+    search_rulebook output is a series of '=== DOCUMENT: X | PAGE n ===' page
+    sections — keep every header plus the head of each section so the model
+    still knows which doc/page said what (and doesn't re-retrieve it). Other
+    tool outputs keep their head.
+    """
+    if len(content) <= _DIGEST_TOTAL:
+        return content
+    marker = "=== DOCUMENT:"
+    if marker in content:
+        parts = content.split(marker)
+        sections = []
+        for part in parts[1:]:
+            section = marker + part.strip()
+            if len(section) > _DIGEST_PER_SECTION:
+                section = section[:_DIGEST_PER_SECTION].rstrip() + " …[truncated]"
+            sections.append(section)
+        digest = "\n\n".join(sections)
+    else:
+        digest = content[:_DIGEST_TOTAL].rstrip() + " …[truncated]"
+    if len(digest) > _DIGEST_TOTAL:
+        digest = digest[:_DIGEST_TOTAL].rstrip() + " …[truncated]"
+    return "[earlier retrieval, digest] " + digest
+
 
 def _build_llm(model_name: str):
     """Instantiate the correct LangChain chat class based on MODEL_OPTIONS."""
@@ -61,12 +99,25 @@ def _build_llm(model_name: str):
         )
     if provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model_name, api_key=key, temperature=0)
+        # Sonnet 5 / Opus 4.7+ / Fable reject non-default sampling params
+        # (temperature=0 -> 400). Omit temperature for those models; older
+        # models keep temperature=0 for eval determinism.
+        no_sampling = model_name.startswith(
+            ("claude-sonnet-5", "claude-opus-4-7", "claude-opus-4-8", "claude-fable")
+        )
+        kwargs = {} if no_sampling else {"temperature": 0}
+        return ChatAnthropic(model=model_name, api_key=key, **kwargs)
     elif provider == "openai":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model=model_name, api_key=key, temperature=0)
     else:
-        return ChatTogether(model=model_name, together_api_key=key, temperature=0)
+        # max_tokens matters: Together's default output cap (~2048) gets fully
+        # consumed by reasoning models' chain-of-thought (observed: DeepSeek
+        # V4-Pro spent 2048/2048 tokens on reasoning at the forced-answer turn
+        # and returned empty content). Give synthesis room.
+        return ChatTogether(
+            model=model_name, together_api_key=key, temperature=0, max_tokens=8192
+        )
 
 
 def build_agent(
@@ -89,13 +140,16 @@ def build_agent(
     agent_config: dict = {
         "top_k": RETRIEVAL_TOP_K,
         "enable_web_search": True,
-        "enable_page_vision": False,
+        "enable_page_vision": True,
     }
     all_tools = make_all_tools(
         game_id, game_name, qdrant_client, agent_config, GAMES_DB_PATH,
     )
 
     llm = _build_llm(model_name)
+    # Prompt caching is Anthropic-only. Other providers reject/mishandle the
+    # cache_control content-block field, so gate it on the provider.
+    supports_prompt_cache = MODEL_OPTIONS.get(model_name, "together") == "anthropic"
 
     # ── Dynamic tool binding ─────────────────────────────────────────────
     # Tools are bound per invocation based on agent_config toggles.
@@ -120,22 +174,48 @@ def build_agent(
                 if t.name not in _TOGGLE_KEYS
                 or agent_config.get(_TOGGLE_KEYS[t.name], True)
             ]
-            _bind_cache[cache_key] = llm.bind_tools(active)
+            # strict=True: provider-side schema enforcement of tool args
+            # (Anthropic schema adherence / Together-OpenAI strict mode), so
+            # required fields like submit_answer.citations can't be omitted.
+            _bind_cache[cache_key] = llm.bind_tools(active, strict=True)
         return _bind_cache[cache_key]
 
+    _forced_model_cache: list = []
+
+    def _get_forced_answer_model():
+        """LLM bound to only submit_answer, for the soft-stop turn."""
+        if not _forced_model_cache:
+            submit = next(t for t in all_tools if t.name == "submit_answer")
+            _forced_model_cache.append(llm.bind_tools([submit], strict=True))
+        return _forced_model_cache[0]
+
     def _build_system_message(plan: list[str] | None = None) -> SystemMessage:
-        """Build the system prompt fresh from the database each call."""
+        """Build the system prompt fresh from the database each call.
+
+        The prompt is byte-stable within a single question (docs are fixed and
+        the planner sets `plan` once), so a cache_control breakpoint here lets
+        every follow-up turn read the tools+system prefix Anthropic wrote on the
+        first turn instead of re-billing it at full price. Render order is
+        tools → system → messages, so this one breakpoint caches both the tool
+        schemas and the system prompt. Providers that ignore the field (Together,
+        OpenAI) just drop it — a list-of-blocks content is still valid there.
+        """
         docs = get_documents(game_id, GAMES_DB_PATH)
         doc_tuples = [
             (d["doc_name"], d.get("doc_tag", "rulebook"), d.get("description"))
             for d in docs
         ]
+        prompt = build_system_prompt(game_name, documents=doc_tuples, plan=plan)
+        if not supports_prompt_cache:
+            return SystemMessage(content=prompt)
         return SystemMessage(
-            content=build_system_prompt(
-                game_name,
-                documents=doc_tuples,
-                plan=plan,
-            )
+            content=[
+                {
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
         )
 
     # ── Nodes ─────────────────────────────────────────────────────────────────
@@ -153,14 +233,18 @@ def build_agent(
             default=-1,
         )
 
-        # Compress ToolMessages that the LLM has already seen (before last AI turn)
-        # to free context space, while preserving tool_call_id pairing.
+        # Compress ToolMessages the LLM has already seen (before last AI turn),
+        # preserving tool_call_id pairing. NOT a bare char-count stub: that
+        # erased the evidence (doc names, pages, rule text), which forced the
+        # model to re-retrieve identical chunks and left the final answer with
+        # nothing to cite. The digest keeps each page's identity plus the
+        # leading text so earlier findings stay usable and citable.
         compressed: list = []
         for i, m in enumerate(all_messages):
             if isinstance(m, ToolMessage) and i < last_ai_idx:
                 compressed.append(
                     ToolMessage(
-                        content=f"[retrieved {len(m.content)} chars — already processed]",
+                        content=_digest_tool_content(str(m.content)),
                         tool_call_id=m.tool_call_id,
                         name=getattr(m, "name", "tool"),
                     )
@@ -169,9 +253,35 @@ def build_agent(
                 compressed.append(m)
 
         plan = state.get("plan")
-        bound_model = _get_bound_model()
-        response = bound_model.invoke([_build_system_message(plan=plan)] + compressed)
-        return {"messages": [response]}
+        turns = (state.get("agent_turns") or 0) + 1
+
+        # Soft stop: once the agent has taken many turns without answering, stop
+        # letting it search and force a best-effort submit_answer. This converts
+        # a hard GraphRecursionError (which yields NO answer and NO citations)
+        # into a scoreable answer built from whatever it has already retrieved.
+        if turns >= _SOFT_TURN_CAP:
+            nudge = HumanMessage(content=(
+                "You have reached the search limit and must stop NOW. Do not "
+                "call any search or lookup tool again. If the sources you have "
+                "already retrieved answer the question, call submit_answer with "
+                "that answer and its citations. If they genuinely do NOT, do "
+                "not guess and do not present unverified rules as the answer. "
+                "Instead call submit_answer with: (1) what you did find and "
+                "verify, with citations; (2) what specific information is still "
+                "missing; and (3) ONE targeted question for the user whose "
+                "answer would let you find it next turn — for example the page "
+                "number of the relevant entry, the game edition, or which "
+                "expansion is in play. This is an ongoing conversation: the "
+                "user can reply, and you will get another chance to answer."
+            ))
+            response = _get_forced_answer_model().invoke(
+                [_build_system_message(plan=plan)] + compressed + [nudge]
+            )
+        else:
+            response = _get_bound_model().invoke(
+                [_build_system_message(plan=plan)] + compressed
+            )
+        return {"messages": [response], "agent_turns": turns}
 
     tool_node = ToolNode(all_tools)
 
@@ -261,13 +371,14 @@ def _make_input(game_id: str, query: str) -> dict:
         "game_name": "",
         "final_answer": None,
         "plan": None,
+        "agent_turns": 0,
     }
 
 
 def _make_config(thread_id: str | None) -> dict:
     return {
         "configurable": {"thread_id": thread_id or str(uuid.uuid4())},
-        "recursion_limit": 20,
+        "recursion_limit": _RECURSION_LIMIT,
     }
 
 

@@ -24,10 +24,12 @@ OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
 # Provider values: "together" | "anthropic" | "openai"
 MODEL_OPTIONS: dict[str, str] = {
     "meta-llama/Llama-3.3-70B-Instruct-Turbo": "together",
+    "deepseek-ai/DeepSeek-V4-Pro": "together",
+    "moonshotai/Kimi-K2.6": "together",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": "together",
-    "Qwen/Qwen3-235B-A22B-Instruct-2507-tput": "together",
     "deepseek-ai/DeepSeek-V3.1": "together",
     "claude-sonnet-4-6": "anthropic",
+    "claude-sonnet-5": "anthropic",
     "gpt-4o": "openai",
 }
 
@@ -66,7 +68,7 @@ VLM_DEFAULT_PRESET: str = "qwen"
 # "cohere" uses the Cohere Rerank API (free tier: 1k calls/month).
 # "fastembed" uses a local cross-encoder model via FastEmbed (no API key needed).
 # "none" disables re-ranking (only RRF fusion).
-RERANK_PROVIDER: str = "cohere"  # "cohere" | "fastembed" | "none"
+RERANK_PROVIDER: str = "fastembed"  # "cohere" | "fastembed" | "none"
 COHERE_API_KEY: str | None = os.getenv("COHERE_API_KEY")
 COHERE_RERANK_MODEL: str = "rerank-v3.5"
 FASTEMBED_RERANK_MODEL: str = "BAAI/bge-reranker-base"
@@ -76,8 +78,32 @@ FASTEMBED_RERANK_MODEL: str = "BAAI/bge-reranker-base"
 PAGE_VISION_MODEL: str = "claude-sonnet-4-6"
 PAGE_VISION_DPI: int = 150
 
+# ── Icon dictionary ──────────────────────────────────────────────────────────
+# Frontier VLM used by the icon-dictionary resolve stage (offline, per game,
+# on demand). Maps model id → provider, same convention as MODEL_OPTIONS.
+# Any vision-capable chat model works; add entries as needed.
+ICON_VLM_OPTIONS: dict[str, str] = {
+    "Qwen/Qwen2.5-VL-72B-Instruct": "together",
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8": "together",
+    "Qwen/Qwen3.5-9B": "together",
+    "moonshotai/Kimi-K2.6": "together",
+    "claude-sonnet-4-6": "anthropic",
+    "gpt-4o": "openai",
+}
+ICON_RESOLVE_MODEL: str = os.getenv("ICON_RESOLVE_MODEL", "Qwen/Qwen2.5-VL-72B-Instruct")
+
 # ── Web Search (Tavily) ──────────────────────────────────────────────────────
 TAVILY_API_KEY: str | None = os.getenv("TAVILY_API_KEY")
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+# LLM judge for answer correctness. Defaults to Claude when the key exists
+# (stronger judge, decorrelated from the Together-served agent models),
+# otherwise falls back to the default agent model.
+EVAL_JUDGE_MODEL: str = os.getenv(
+    "EVAL_JUDGE_MODEL",
+    "claude-sonnet-4-6" if ANTHROPIC_API_KEY else DEFAULT_MODEL,
+)
+EVAL_RUNS_DIR_NAME: str = "eval_runs"  # under DATA_DIR
 
 # ── Hardware ──────────────────────────────────────────────────────────────────
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
