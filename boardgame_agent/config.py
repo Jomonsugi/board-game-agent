@@ -23,10 +23,13 @@ OPENAI_API_KEY: str | None = os.getenv("OPENAI_API_KEY")
 # Maps model id → provider. Add Anthropic/OpenAI models here as needed.
 # Provider values: "together" | "anthropic" | "openai"
 MODEL_OPTIONS: dict[str, str] = {
-    "Qwen/Qwen3.5-9B": "together",
+    "meta-llama/Llama-3.3-70B-Instruct-Turbo": "together",
+    "deepseek-ai/DeepSeek-V4-Pro": "together",
+    "moonshotai/Kimi-K2.6": "together",
     "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo": "together",
     "deepseek-ai/DeepSeek-V3.1": "together",
     "claude-sonnet-4-6": "anthropic",
+    "claude-sonnet-5": "anthropic",
     "gpt-4o": "openai",
 }
 

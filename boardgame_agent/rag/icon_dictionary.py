@@ -792,6 +792,51 @@ def format_icon_text(icon: sqlite3.Row | dict[str, Any]) -> str:
     return text
 
 
+# Words that vary between duplicate resolves of the same icon without carrying
+# identity ("number task token 1" vs "number token 1"). Used by apply_to_cache's
+# per-page dedupe.
+_NAME_FILLER_WORDS = frozenset({"task", "token", "tile", "marker", "icon", "symbol", "badge"})
+
+
+def _insert_anchored(page_data: dict, icon_bbox: dict, text: str) -> str:
+    """Insert *text* into the page text next to the icon's location.
+
+    Finds the existing (non-injected) bbox that best overlaps the icon's
+    position — typically the picture caption for that icon — and inserts the
+    meaning right after that bbox's text, so the meaning lands inside the
+    correct section of the page instead of in an unattributed pile at the end.
+    Falls back to appending when no anchor is found. Insertions use the
+    '\\n\\n' + text form the strip pass removes, keeping re-apply idempotent.
+    """
+    page_text = page_data.get("text", "") or ""
+    ix0, iy0, ix1, iy1 = icon_bbox["x0"], icon_bbox["y0"], icon_bbox["x1"], icon_bbox["y1"]
+    icx, icy = (ix0 + ix1) / 2, (iy0 + iy1) / 2
+
+    best = None  # (overlap_area, -distance, bbox_text)
+    for b in page_data.get("bboxes", []):
+        if b.get("label") == _ICON_BBOX_LABEL or not b.get("text"):
+            continue
+        btext = b["text"]
+        if btext not in page_text:
+            continue
+        bx0, by0, bx1, by1 = b.get("x0", 0), b.get("y0", 0), b.get("x1", 0), b.get("y1", 0)
+        # y0 is the top edge in bottom-left origin (y0 > y1).
+        ox = max(0.0, min(ix1, bx1) - max(ix0, bx0))
+        oy = max(0.0, min(iy0, by0) - max(iy1, by1))
+        overlap = ox * oy
+        bcx, bcy = (bx0 + bx1) / 2, (by0 + by1) / 2
+        dist = ((icx - bcx) ** 2 + (icy - bcy) ** 2) ** 0.5
+        cand = (overlap, -dist, btext)
+        if best is None or cand > best:
+            best = cand
+
+    if best is not None and (best[0] > 0 or -best[1] < 200):
+        anchor_text = best[2]
+        idx = page_text.find(anchor_text) + len(anchor_text)
+        return (page_text[:idx] + "\n\n" + text + page_text[idx:]).strip()
+    return (page_text + "\n\n" + text).strip()
+
+
 def apply_to_cache(
     game_id: str,
     data_dir: Path | None = None,
@@ -869,7 +914,16 @@ def apply_to_cache(
                     page_w, page_h = d[0].rect.width, d[0].rect.height
                 d.close()
 
+            # Two-pass: collect per-page injections first so we can (a) dedupe
+            # near-identical resolves by normalized icon name (under-merged
+            # clusters produce several icon_ids with the same name and slightly
+            # different meaning text — one per page is enough) and (b) anchor
+            # each meaning inline next to the caption it explains instead of
+            # dumping all meanings unattributed at the end of the page (which
+            # detached them from their mission/section and misled the agent).
             seen: set[tuple[int, str]] = set()  # (logical page_num, icon_id)
+            per_page: dict[int, list[tuple[dict, sqlite3.Row, sqlite3.Row]]] = {}
+            page_refs: dict[int, dict] = {}
             for inst in doc_instances:
                 page_data = _logical_page_for_instance(
                     pages, inst["pdf_page_index"], (inst["x0"] + inst["x1"]) / 2, page_w
@@ -880,31 +934,49 @@ def apply_to_cache(
                 if key in seen:
                     continue
                 seen.add(key)
-                icon = icons[inst["icon_id"]]
-                text = format_icon_text(icon)
+                pid = id(page_data)
+                page_refs[pid] = page_data
+                per_page.setdefault(pid, []).append((page_data, inst, icons[inst["icon_id"]]))
 
-                # fitz top-left → Docling bottom-left (y0 = top edge, y0 > y1),
-                # x shifted for right spread halves to match cached bboxes.
-                x_off = page_w / 2 if page_data.get("_spread_half") == "right" else 0.0
-                bbox = {
-                    "x0": inst["x0"] - x_off,
-                    "y0": page_h - inst["y0"],
-                    "x1": inst["x1"] - x_off,
-                    "y1": page_h - inst["y1"],
-                    "text": text,
-                    "label": _ICON_BBOX_LABEL,
-                    "_icon_id": inst["icon_id"],
-                }
-                if icon["def_doc"]:
-                    bbox["_definition"] = {
-                        "doc_name": icon["def_doc"],
-                        "page_num": icon["def_page"],
-                        "bbox_idx": icon["def_bbox_idx"],
+            for pid, entries in per_page.items():
+                page_data = page_refs[pid]
+                # Dedupe under-merged resolves. Key on the normalized name with
+                # low-signal filler words removed, so name variants of the same
+                # icon collapse: "number task token 1" / "number token 1" →
+                # "number 1"; "order token transfer" / "order tile transfer" →
+                # "order transfer". Keep the longest meaning per key.
+                by_name: dict[str, tuple[dict, sqlite3.Row, sqlite3.Row]] = {}
+                for entry in entries:
+                    words = re.sub(r"[^a-z0-9]+", " ", (entry[2]["name"] or "").lower()).split()
+                    name = " ".join(w for w in words if w not in _NAME_FILLER_WORDS) or " ".join(words)
+                    kept = by_name.get(name)
+                    if kept is None or len(entry[2]["meaning"] or "") > len(kept[2]["meaning"] or ""):
+                        by_name[name] = entry
+                for _, inst, icon in by_name.values():
+                    text = format_icon_text(icon)
+
+                    # fitz top-left → Docling bottom-left (y0 = top edge, y0 > y1),
+                    # x shifted for right spread halves to match cached bboxes.
+                    x_off = page_w / 2 if page_data.get("_spread_half") == "right" else 0.0
+                    bbox = {
+                        "x0": inst["x0"] - x_off,
+                        "y0": page_h - inst["y0"],
+                        "x1": inst["x1"] - x_off,
+                        "y1": page_h - inst["y1"],
+                        "text": text,
+                        "label": _ICON_BBOX_LABEL,
+                        "_icon_id": inst["icon_id"],
                     }
-                page_data.setdefault("bboxes", []).append(bbox)
-                page_data["text"] = (page_data.get("text", "") + "\n\n" + text).strip()
-                n_injected += 1
-                changed = True
+                    if icon["def_doc"]:
+                        bbox["_definition"] = {
+                            "doc_name": icon["def_doc"],
+                            "page_num": icon["def_page"],
+                            "bbox_idx": icon["def_bbox_idx"],
+                        }
+                    page_data.setdefault("bboxes", []).append(bbox)
+                    page_data["text"] = _insert_anchored(page_data, bbox, text)
+                    n_injected += 1
+                    changed = True
 
         if changed:
             cache_path.write_text(json.dumps(pages), encoding="utf-8")
@@ -959,26 +1031,62 @@ def get_stats(game_id: str, data_dir: Path | None = None) -> dict[str, Any] | No
         conn.close()
 
 
+_LOOKUP_STOPWORDS = frozenset(
+    {"a", "an", "and", "for", "icon", "in", "of", "on", "or", "symbol", "the", "to", "what"}
+)
+
+
 def lookup(game_id: str, query: str, data_dir: Path | None = None) -> list[dict[str, Any]]:
-    """Keyword lookup over resolved icons (used by the agent's lookup_icon tool)."""
+    """Keyword lookup over resolved icons (used by the agent's lookup_icon tool).
+
+    Matches on individual query terms rather than the whole string: agents ask
+    "satellite flag mission icon", which never appears verbatim in any name or
+    meaning. Results are ranked by how many distinct terms they match, so the
+    icon that hits the most of the query wins.
+
+    Returns [] when nothing matches — callers must not treat an unranked dump
+    of the whole table as an answer.
+    """
     if not has_dictionary(game_id, data_dir):
         return []
+    terms = [
+        t for t in re.findall(r"[a-z0-9]+", query.lower())
+        if t not in _LOOKUP_STOPWORDS and len(t) > 1
+    ]
+    if not terms:
+        return []
+    # Singular stems, used for BOTH the SQL prefilter and the scoring below —
+    # prefiltering on "arrows" would never retrieve a row saying "arrow".
+    stems = [t[:-1] if len(t) > 3 and t.endswith("s") else t for t in terms]
     conn = connect(game_id, data_dir)
     try:
-        like = f"%{query.strip()}%"
+        where = " OR ".join(["(name LIKE ? OR meaning LIKE ?)"] * len(stems))
+        params = [p for s in stems for p in (f"%{s}%", f"%{s}%")]
         rows = conn.execute(
             "SELECT * FROM icons WHERE meaning IS NOT NULL AND meaning != '' "
-            "AND status != 'rejected' "
-            "AND (name LIKE ? OR meaning LIKE ?) ORDER BY n_instances DESC",
-            (like, like),
+            f"AND status != 'rejected' AND ({where})",
+            params,
         ).fetchall()
-        if not rows and query.strip():
-            # Fall back to listing everything — small tables, better than nothing.
-            rows = conn.execute(
-                "SELECT * FROM icons WHERE meaning IS NOT NULL AND meaning != '' "
-                "AND status != 'rejected' ORDER BY n_instances DESC"
-            ).fetchall()
-        return [dict(r) for r in rows]
+        # SQL LIKE is a cheap superset prefilter — it matches substrings, so
+        # "hat" hits "t-hat". Re-score in Python on word boundaries to drop
+        # those phantom hits. Match the singular stem with a leading \b only,
+        # so "arrow"/"arrows" and "token"/"tokens" hit each other either way.
+        patterns = [re.compile(rf"\b{re.escape(s)}") for s in stems]
+        scored = []
+        for row in rows:
+            icon = dict(row)
+            name_hay = (icon.get("name") or "").lower()
+            meaning_hay = (icon.get("meaning") or "").lower()
+            # Name hits outrank meaning hits — a passing mention of "satellite"
+            # in another icon's meaning shouldn't beat the icon named for it.
+            score = sum(
+                2 if p.search(name_hay) else 1 if p.search(meaning_hay) else 0
+                for p in patterns
+            )
+            if score:
+                scored.append((score, icon.get("n_instances") or 0, icon))
+        scored.sort(key=lambda s: (-s[0], -s[1]))
+        return [icon for _, _, icon in scored]
     finally:
         conn.close()
 

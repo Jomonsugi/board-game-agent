@@ -17,7 +17,9 @@ Usage:
     python -m boardgame_agent.evals.runner --langsmith                      # sync dataset + traces
 
 Metrics:
-- answer: correct / partial / incorrect (LLM judge, see judge.py)
+- answer: correct / partial / incorrect / clarification (LLM judge, see
+  judge.py — clarification = honest concession + targeted question, tracked
+  separately from incorrect so hallucinated rulings stay a distinct signal)
 - citation_doc_hit: any predicted citation names a gold doc. Errored runs
   (recursion limit, timeouts) count as citation misses, not as excluded —
   "couldn't find it" is a real outcome and must drag the hit rates down.
@@ -194,6 +196,10 @@ def _summarize(rows: list[dict], model_name: str, judge_model: str, dataset_path
             "correct": verdicts.get("correct", 0),
             "partial": verdicts.get("partial", 0),
             "incorrect": verdicts.get("incorrect", 0),
+            # Honest concession: no ruling given; agent reported what it found,
+            # what's missing, and asked a targeted question. Better than a
+            # hallucinated ruling, but not a correct answer.
+            "clarification": verdicts.get("clarification", 0),
             "error": verdicts.get("error", 0),
             "correct_rate": round(verdicts.get("correct", 0) / len(rs), 3),
             "citation_doc_hit_rate": rate(rs, "citation_doc_hit"),
@@ -221,7 +227,8 @@ def _print_summary(s: dict) -> None:
     o = s["overall"]
     print(f"\n{'─' * 60}")
     print(f"OVERALL  n={o['n']}  correct={o['correct']}  partial={o['partial']}  "
-          f"incorrect={o['incorrect']}  errors={o['error']}")
+          f"incorrect={o['incorrect']}  clarification={o['clarification']}  "
+          f"errors={o['error']}")
     print(f"  correct_rate={o['correct_rate']}  "
           f"doc_hit={o['citation_doc_hit_rate']}  page_hit={o['citation_page_hit_rate']}")
     for label, section in (("game", "by_game"), ("tag", "by_tag"), ("difficulty", "by_difficulty")):

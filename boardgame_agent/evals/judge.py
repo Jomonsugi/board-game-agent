@@ -17,13 +17,19 @@ from boardgame_agent.config import EVAL_JUDGE_MODEL
 
 
 class JudgeVerdict(BaseModel):
-    verdict: Literal["correct", "partial", "incorrect"] = Field(
+    verdict: Literal["correct", "partial", "incorrect", "clarification"] = Field(
         description=(
             "correct: agent answer agrees with the gold answer on every point "
             "that matters for playing the game correctly. "
             "partial: agrees on the core ruling but omits or muddles a "
             "material detail. "
-            "incorrect: contradicts the gold answer or fails to answer."
+            "incorrect: contradicts the gold answer, fails to answer, or "
+            "presents an invented/unverified ruling. "
+            "clarification: the agent gives NO ruling — it honestly reports "
+            "what it found, states what specific information is missing, and "
+            "asks the user a reasonable, targeted question that would help it "
+            "answer (e.g. a page number or edition). An answer that guesses "
+            "and also asks a question is judged on the guess, not the ask."
         )
     )
     reasoning: str = Field(description="One or two sentences explaining the verdict")
@@ -37,10 +43,15 @@ game the same way as a player following the gold answer?
 
 - Extra correct detail is fine; do not penalize verbosity or tone.
 - Different wording for the same ruling is correct.
-- A hedge ("the rulebook doesn't specify") when the gold answer gives a
-  concrete ruling is incorrect.
+- A hedge ("the rulebook doesn't specify") presented AS the answer, when the
+  gold answer gives a concrete ruling, is incorrect.
 - If the gold answer says the rules don't cover something, the agent must say
-  the same to be correct — a confident invented ruling is incorrect."""
+  the same to be correct — a confident invented ruling is incorrect.
+- clarification is reserved for an honest concession: the agent gives no
+  ruling, says what it verified and what is missing, and asks the user a
+  targeted question that would plausibly unlock the answer. This is better
+  than a fabricated ruling but is NOT a correct answer. If the agent gives a
+  ruling (right or wrong) anywhere in its response, do not use clarification."""
 
 _JUDGE_USER = """QUESTION:
 {question}
