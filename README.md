@@ -26,17 +26,19 @@ uv run boardgame-agent
 
 | Key | Purpose | Free tier? |
 |-----|---------|------------|
-| `ANTHROPIC_API_KEY` | Claude models (agent or vision) | No |
+| `ANTHROPIC_API_KEY` | Claude models (agent, page vision, eval judge) | No |
 | `OPENAI_API_KEY` | GPT-4o models | No |
-| `COHERE_API_KEY` | Re-ranking (improves retrieval accuracy) | Yes (1k calls/month) |
+| `COHERE_API_KEY` | Optional hosted re-ranker (a local cross-encoder is the default) | Yes (rate-limited) |
 | `TAVILY_API_KEY` | Web search fallback | Yes |
 
 ## Features
 
-- **Cited, clickable answers.** Every claim links to a paragraph in the source PDF, highlighted in the viewer.
+- **Cited, clickable answers.** Every claim links to a paragraph in the source PDF, highlighted in the viewer. Citations are schema-enforced.
 - **Cross-references on its own.** When a supplement points back to a rulebook section, the agent looks it up before answering instead of guessing.
 - **Reads icons and diagrams.** A local vision model describes each picture in the rulebook at upload time, so visual elements are searchable alongside the text.
-- **Page vision on demand.** For icon-heavy pages where text isn't enough, the agent can visually analyze the rendered page to figure out what to search for next.
+- **Icon dictionary.** An offline pipeline resolves each recurring icon to its rule meaning once per game, then injects those meanings next to the icon wherever it appears — so "what does this symbol mean" questions are answerable by ordinary text search.
+- **Page vision when text isn't enough.** For icon-heavy pages, the agent visually analyzes the rendered page — and if you name a page ("on page 12, what does…"), it looks at that page directly.
+- **Asks instead of guessing.** When the documents can't answer, the agent reports what it verified and asks one targeted clarifying question.
 - **Web search fallback.** Falls back to trusted domains you configure per game (default: BoardGameGeek) when the indexed documents come up short.
 - **Answer history.** Rate answers with thumbs up/down — accepted ones are reused so the agent stays consistent on similar questions.
 - **Supports PDF and Markdown.** PDFs get bbox-precise citation highlighting; Markdown gets text-based highlighting.
@@ -55,6 +57,20 @@ uv run boardgame-agent
 
 Per-document settings (description, tag, two-page-spread splitting, re-running picture enrichment) are available in the sidebar under *Options*.
 
+## Evaluating changes
+
+An offline eval harness measures answer quality against a curated, human-verified question set spanning multiple games. Each question carries a gold answer and gold citations down to the page level, so runs report both answer correctness (LLM judge) and citation accuracy:
+
+```bash
+uv run python -m boardgame_agent.evals.runner                              # all games, all questions
+uv run python -m boardgame_agent.evals.runner --games <game_id>            # one game
+uv run python -m boardgame_agent.evals.runner --tags icon                  # subset by tag
+uv run python -m boardgame_agent.evals.runner --model claude-sonnet-5 --judge-model claude-sonnet-4-6
+uv run python -m boardgame_agent.evals.runner --langsmith                  # sync dataset + traces to LangSmith
+```
+
+Results land in `data/eval_runs/{timestamp}/` as per-question rows plus a summary broken down by game, tag, and difficulty. See [ARCHITECTURE.md](ARCHITECTURE.md) for the dataset schema and judging design.
+
 ## Built with
 
 LangGraph · Qdrant · Docling · Streamlit · Ollama · Apple MLX
@@ -63,7 +79,7 @@ LLM providers are pluggable through LangChain — currently wired to Anthropic, 
 
 ## Documentation
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — how the agent reasons, the retrieval pipeline, design decisions.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the agent reasons, the retrieval pipeline, the icon dictionary, the eval harness, design decisions.
 
 ## License
 

@@ -133,8 +133,12 @@ def make_page_vision_tool(game_id: str):
             f"You are analyzing page {page_num} of a board game rulebook "
             f"document called '{doc_name}'.\n\n"
             f"Question: {question}\n\n"
-            f"Describe what you see that answers this question. Be specific "
-            f"about any icons, symbols, numbers, or game components visible."
+            f"First TRANSCRIBE literally: list every number, icon, token, and "
+            f"symbol visible in the relevant area, each with its exact printed "
+            f"value, shape, color, and position on the page. Do not guess what "
+            f"a component means — transcribe what is printed. Only after "
+            f"transcribing, answer the question, and clearly separate what you "
+            f"SEE from what you INFER."
         )
 
         try:

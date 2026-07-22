@@ -573,7 +573,9 @@ def _candidate_pages(
         score = float(len(page_data.get("text") or ""))
         tag = doc_tags.get(doc_name, "rulebook")
         if tag in ("rulebook", "supplement", "quick_reference"):
-            score += 100_000  # definitions live in rules material, not logbooks
+            # Definitions live in rules material, not in scenario/campaign
+            # books where icons merely appear.
+            score += 100_000
         scored[key] = (score, page_data, doc_name)
 
     ranked = sorted(scored.values(), key=lambda t: t[0], reverse=True)
@@ -920,7 +922,7 @@ def apply_to_cache(
             # different meaning text — one per page is enough) and (b) anchor
             # each meaning inline next to the caption it explains instead of
             # dumping all meanings unattributed at the end of the page (which
-            # detached them from their mission/section and misled the agent).
+            # detached them from their section and misled the agent).
             seen: set[tuple[int, str]] = set()  # (logical page_num, icon_id)
             per_page: dict[int, list[tuple[dict, sqlite3.Row, sqlite3.Row]]] = {}
             page_refs: dict[int, dict] = {}
@@ -1040,9 +1042,9 @@ def lookup(game_id: str, query: str, data_dir: Path | None = None) -> list[dict[
     """Keyword lookup over resolved icons (used by the agent's lookup_icon tool).
 
     Matches on individual query terms rather than the whole string: agents ask
-    "satellite flag mission icon", which never appears verbatim in any name or
-    meaning. Results are ranked by how many distinct terms they match, so the
-    icon that hits the most of the query wins.
+    multi-word descriptive queries that never appear verbatim in any icon name
+    or meaning. Results are ranked by how many distinct terms they match, so
+    the icon that hits the most of the query wins.
 
     Returns [] when nothing matches — callers must not treat an unranked dump
     of the whole table as an answer.
@@ -1077,8 +1079,8 @@ def lookup(game_id: str, query: str, data_dir: Path | None = None) -> list[dict[
             icon = dict(row)
             name_hay = (icon.get("name") or "").lower()
             meaning_hay = (icon.get("meaning") or "").lower()
-            # Name hits outrank meaning hits — a passing mention of "satellite"
-            # in another icon's meaning shouldn't beat the icon named for it.
+            # Name hits outrank meaning hits — a term mentioned in passing in
+            # another icon's meaning shouldn't beat the icon named for it.
             score = sum(
                 2 if p.search(name_hay) else 1 if p.search(meaning_hay) else 0
                 for p in patterns

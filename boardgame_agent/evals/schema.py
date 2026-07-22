@@ -14,12 +14,13 @@ Conventions:
 - ``gold_citations`` carry two page coordinates per citation:
   - ``page_num``: the page number a person sees — the label printed on the
     page, i.e. the page you would flip to in the physical rulebook. This is
-    also the post-spread-split logical numbering (e.g. The Crew logbook PDF
-    page 4 is a spread of printed pages 6–7). ``null`` when the page is
-    unnumbered (e.g. the LotR player aid).
+    also the post-spread-split logical numbering (a spread-printed PDF page
+    holds two printed pages). ``null`` when the page is unnumbered (e.g. a
+    player aid).
   - ``pdf_page``: the physical 1-indexed page of the source PDF file.
-  For most rulebooks here the two are equal; they differ for the Crew
-  logbook (spreads) and the D&D PHB/MM (printed = pdf − 1).
+  For most rulebooks the two are equal; they differ for spread-printed
+  books and for books whose front matter offsets the printed numbering
+  (printed = pdf − k).
   ``citation_page_hit`` counts a predicted (doc, page) as a hit if it
   matches either coordinate — tighten to one convention once the citation
   pipeline settles on it.

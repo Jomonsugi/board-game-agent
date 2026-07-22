@@ -140,7 +140,7 @@ def build_agent(
     agent_config: dict = {
         "top_k": RETRIEVAL_TOP_K,
         "enable_web_search": True,
-        "enable_page_vision": False,
+        "enable_page_vision": True,
     }
     all_tools = make_all_tools(
         game_id, game_name, qdrant_client, agent_config, GAMES_DB_PATH,

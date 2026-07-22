@@ -9,8 +9,8 @@ citation-match metrics, and writes results + a summary to
 
 Usage:
     python -m boardgame_agent.evals.runner                                  # all games
-    python -m boardgame_agent.evals.runner --games the_crew__the_quest_for_planet_nine
-    python -m boardgame_agent.evals.runner --games gloomhaven sky_team      # subset of games
+    python -m boardgame_agent.evals.runner --games <game_id>
+    python -m boardgame_agent.evals.runner --games <game_id> <game_id>      # subset of games
     python -m boardgame_agent.evals.runner --tags icon                      # subset by tag
     python -m boardgame_agent.evals.runner --model claude-sonnet-4-6
     python -m boardgame_agent.evals.runner --include-unreviewed
@@ -74,8 +74,8 @@ def citation_match(example: EvalExample, predicted_citations: list) -> dict:
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def _display_name(game_id: str) -> str:
-    # "the_crew__the_quest_for_planet_nine" -> "The Crew: The Quest For Planet Nine"
-    # "dungeons___dragons" (3+ underscores: a swallowed '&' etc.) -> "Dungeons Dragons"
+    # "some_game__with_subtitle" -> "Some Game: With Subtitle"
+    # 3+ underscores (a swallowed '&' etc.) collapse to a single space
     import re
     named = re.sub(r"_{3,}", " ", game_id).replace("__", ": ").replace("_", " ")
     return named.title()

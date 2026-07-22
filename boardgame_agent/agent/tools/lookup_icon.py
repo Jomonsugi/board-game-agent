@@ -31,9 +31,10 @@ def make_lookup_icon_tool(game_id: str):
         if not matches:
             return (
                 f"No icons matching '{query}' in the dictionary. Try a single "
-                "distinctive word (e.g. 'omega', 'satellite', 'arrow') rather "
-                "than a full description — or use search_rulebook instead. Do "
-                "not guess a name for the icon and search for that."
+                "distinctive word from the icon's appearance (its shape, "
+                "symbol, or label) rather than a full description — or use "
+                "search_rulebook instead. Do not guess a name for the icon "
+                "and search for that."
             )
         lines = [f"Best matches for '{query}' (most relevant first):"]
         for m in matches[:8]:

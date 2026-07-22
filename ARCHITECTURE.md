@@ -19,7 +19,8 @@ User question
                  │  ┌─────────┐    ┌───────────────────────────┐    │
                  │  │  Agent  │◀──▶│         Tools             │    │
                  │  │  (LLM)  │    │  search_rulebook          │    │
-                 │  └────┬────┘    │  view_page                │    │
+                 │  └────┬────┘    │  lookup_icon              │    │
+                 │       │         │  view_page                │    │
                  │       │         │  search_web               │    │
                  │       │         │  get_past_answers         │    │
                  │       │         │  submit_answer            │    │
@@ -136,17 +137,15 @@ Qdrant does NOT support cross-encoder re-ranking natively. RRF fusion is rank-ba
 
 ### Re-ranker choice
 
-**Cohere Rerank** is the default — highest-quality re-ranker available with a free tier (1,000 calls/month).
-
 `RERANK_PROVIDER` accepts three values:
-- `"cohere"` (default) — uses the Cohere Rerank API. If `COHERE_API_KEY` is missing the pipeline silently degrades to **RRF-only** (no cross-encoder filtering), returning Qdrant's top-k by RRF rank.
-- `"fastembed"` — uses a local **FastEmbed BGE-reranker-base** (~1GB) cross-encoder. Set this explicitly for offline use; the Cohere setting does *not* fall back to it automatically.
+- `"fastembed"` (default) — local **FastEmbed BGE-reranker-base** (~1GB) cross-encoder.
+- `"cohere"` — the Cohere Rerank API. If a call fails, that query degrades to RRF-only ordering.
 - `"none"` — disables cross-encoder re-ranking entirely.
 
-Cohere returns a `relevance_score` (0-1) per chunk via cross-attention. These scores are currently discarded after re-ordering — they could power a CRAG-style quality gate (see Future considerations).
+Cross-encoder relevance scores are currently discarded after re-ordering — they could power a CRAG-style quality gate (see Future considerations).
 
-**Package: `cohere`** — Rerank API (free tier)
-**Package: `fastembed`** — local cross-encoder option (BGE-reranker-base)
+**Package: `fastembed`** — local cross-encoder (default)
+**Package: `cohere`** — hosted Rerank API option
 
 ### Formatted output to LLM
 
@@ -188,11 +187,17 @@ The graph has two conditional edges:
 
 **Finalize node**: Extracts the JSON payload from `submit_answer`'s ToolMessage and writes it to `state["final_answer"]`. No LLM call.
 
-**Recursion limit**: 20. The agent should answer within this. If not, the finalize node falls back to the agent's last text response.
+**Turn budget**: A soft cap of 14 LLM turns per query. On the capped turn the model is bound to `submit_answer` only and instructed to answer from what it has retrieved — or, if it can't, to state what it verified, what's missing, and ask one targeted clarifying question (the system is conversational; a user-supplied page number feeds `view_page` directly). `recursion_limit` (40) is the hard backstop.
 
-**Message compression**: ToolMessages from previous turns are compressed to `"[retrieved N chars — already processed]"` to free context space. The agent only sees full results from the current turn.
+**Message compression**: ToolMessages from before the last AI turn are compressed to digests that keep each page's `=== DOCUMENT | PAGE ===` header plus leading text, so earlier retrievals stay citable. The current round stays full.
 
-**Dynamic tool binding**: The set of tools the LLM sees is rebuilt per call from `agent_config["enable_web_search"]` and `agent_config["enable_page_vision"]`. Disabled tools are filtered out of `bind_tools()` entirely — the LLM never sees them in its tool schema, so there are no wasted tokens or "tool not available" responses. The bound model is cached on the `(web_search_on, page_vision_on)` tuple so flipping a sidebar toggle takes effect on the next query without rebuilding the graph.
+**Dynamic tool binding**: The tool set is rebuilt per call from `agent_config["enable_web_search"]` and `agent_config["enable_page_vision"]` (both on by default); disabled tools are filtered out of `bind_tools()` entirely. `lookup_icon` is registered only when the game has a built icon dictionary. The bound model is cached on the toggle tuple.
+
+**Strict tool schemas**: Tools are bound with `strict=True` (provider-side schema enforcement on both Anthropic and Together), and `citations` is a required field on `submit_answer`. Strict schemas reject numeric `minimum`/`maximum`, so range clamping happens in the tool body.
+
+**Prompt caching**: For Anthropic models the system prompt carries a `cache_control` breakpoint; since providers render `tools → system → messages`, that one breakpoint caches tool schemas and system prompt together. Other providers ignore the field.
+
+**Together `max_tokens`**: Set to 8192 so reasoning models have room for chain-of-thought plus the final tool call.
 
 **Per-query tool-call cache**: `agent_config["_tool_cache"]` is keyed on `(tool_name, args)` and prevents the agent from re-issuing identical `search_rulebook` / `search_web` calls within a single query. The cache is cleared at the start of every new query in `app.py`.
 
@@ -211,15 +216,22 @@ The system prompt is the core intelligence of the system. It's rebuilt dynamical
 
 The critical section is "How to reason" — the introspection loop that teaches the agent to evaluate its own understanding after every search and keep going when gaps exist. This is what makes the agent cross-reference instead of answering from a single source.
 
+The prompt also defines an **escalation ladder** for when a search misses: exhaust retrieval first (reworded queries, exact terms, other source tags, all retrieval tools), then `view_page` when the right page is located but text can't extract what's on it, then `search_web` as last resort. The prompt offers no give-up path — concession is handled by the turn budget, not the prompt.
+
 ### Tools
 
 | Tool | Purpose | Produces citations? |
 |------|---------|-------------------|
 | `search_rulebook` | Hybrid search over indexed documents with tag filtering | Yes — doc_name, page_num, bbox_indices |
+| `lookup_icon` | Keyword lookup over the game's resolved icon dictionary (registered only when one exists) | No — returns meanings with pointers to where each icon is defined |
 | `view_page` | VLM analysis of a rendered page image | No — helps the agent understand what to search for next |
 | `search_web` | Tavily web search restricted to configured domains | Yes — URL + finding (no bbox) |
 | `get_past_answers` | Semantic search over accepted Q&A history | No — used for consistency, not citation |
-| `submit_answer` | Formats the final answer with merged citations | N/A — this IS the output |
+| `submit_answer` | Formats the final answer with merged citations (citations are schema-required) | N/A — this IS the output |
+
+**`lookup_icon` matching**: the query is tokenized, stopword-stripped, plural-stemmed, and matched on word boundaries; results rank by terms matched, name hits over meaning hits. A miss returns an explicit "no match" rather than a dump of the table.
+
+**`view_page` prompting**: the VLM is instructed to transcribe first (every number, icon, and symbol with printed value, shape, color, position), then answer — separating what it sees from what it infers.
 
 **Citation hierarchy**: `search_rulebook` is the primary citation source. `view_page` is a comprehension aid — it helps the agent understand visual content, but the agent must then search for and cite the text-based rules. `search_web` provides URL citations but no bbox highlights.
 
@@ -242,9 +254,27 @@ The VLM prompt is deliberately minimal: *"Describe exactly what you see: shapes,
 
 These descriptions are embedded into chunks and indexed, making visual elements searchable via normal RAG. When the agent retrieves a page, it sees the descriptions in the bbox listing and can reason about them.
 
-**What's missing:** The link between a visual description ("red starburst with 2") and its game-semantic meaning ("difficulty level 2" or "order token 2"). The agent's introspection loop may find this through cross-referencing — many rulebooks explain their iconography in a components section. For games where it can't, this is an open problem.
+The descriptions are deliberately *visual only* — the link from appearance to game meaning is the icon dictionary's job.
 
-**Future direction:** A mechanism to identify each unique icon and link it to its definition in the rulebook — like a join table from visual description to game meaning. The picture bboxes with coordinates provide the structural foundation for this. The linking strategy is still being designed.
+---
+
+## Icon dictionary
+
+Rulebook icons carry rule meaning ("this task must be completed second") that no query-time model can recover from a caption ("a red shape with a 2 in it"). The icon dictionary (`rag/icon_dictionary.py`) resolves icon meaning **once per game, offline** — where a frontier VLM and unlimited retries are affordable — then injects the resolved meanings into the extraction cache so ordinary single-hop text RAG answers icon questions.
+
+```
+harvest ──▶ dedupe ──▶ resolve ──▶ consolidate ──▶ apply ──▶ reindex
+```
+
+1. **harvest** — crop every icon-sized raster placement in the game's PDFs (PyMuPDF, independent of Docling parse quality). Blank crops are skipped by pixel variance.
+2. **dedupe** — cluster instances by perceptual hash (dHash); recurring symbols collapse to one icon each, one-off art is dropped by a reuse threshold.
+3. **resolve** — a configurable frontier VLM sees the icon crop plus the full candidate pages where it appears, and must *quote* the definition text, which is matched back to a bbox → a definition citation (doc, page, bbox). Legends, inline definitions, and dedicated reference pages are all handled by the same mechanism.
+4. **consolidate** — merge clusters that resolved to the same icon.
+5. **apply** — inject `[Icon: name — meaning (defined in doc p.N)]` into the extraction cache, deduplicated per page and anchored inline next to the caption bbox each icon explains (so a meaning lands in the section it belongs to, not at page end). Re-applying strips previous injections first — the operation is idempotent.
+
+The dictionary also backs the `lookup_icon` agent tool, and every stage caches its output — re-running with a better model only touches entries a human hasn't reviewed.
+
+**Known limits:** perceptual-hash clustering can collide visually similar icons, producing occasional wrong-page entries, and extraction-time caption quality bounds what anchoring can attach to. The definition citations let a human audit any entry back to its source.
 
 ---
 
@@ -327,12 +357,29 @@ All configuration lives in `config.py`. Key settings:
 | Setting | Default | Purpose |
 |---------|---------|---------|
 | `DEFAULT_MODEL` | Llama 3.3 70B (Together) | Agent LLM |
+| `MODEL_OPTIONS` | — | Model id → provider registry (Together / Anthropic / OpenAI) |
 | `OLLAMA_EMBED_MODEL` | qwen3-embedding | Dense embeddings |
 | `SPARSE_EMBED_MODEL` | SPLADE++ | Sparse embeddings |
 | `RETRIEVAL_TOP_K` | 5 | Pages retrieved per query |
-| `RERANK_PROVIDER` | cohere | Cross-encoder re-ranking |
+| `RERANK_PROVIDER` | fastembed | Cross-encoder re-ranking (local by default) |
 | `VLM_DEFAULT_PRESET` | qwen (3B) | Local VLM for picture descriptions |
-| `PAGE_VISION_MODEL` | claude-sonnet-4-6 | VLM for page analysis tool |
+| `PAGE_VISION_MODEL` | claude-sonnet-4-6 | VLM for the page analysis tool |
+| `ICON_RESOLVE_MODEL` | Qwen2.5-VL 72B (Together) | Frontier VLM for offline icon resolution |
+| `EVAL_JUDGE_MODEL` | claude-sonnet-4-6 (when key present) | LLM judge for the eval harness |
+
+---
+
+## Evaluation harness
+
+An offline suite (`boardgame_agent/evals/`) that runs a curated question set through the agent and scores the answers.
+
+**Dataset** (`evals/datasets/questions.jsonl`) — one row per question: `question`, `gold_answer`, `gold_citations`, `tags` (`text`, `icon`, `multi-hop`, `synthesis`), `difficulty`, `game_id`. Gold answers and citations are human-verified against rendered pages. Each citation carries both `page_num` (printed page label) and `pdf_page` (physical PDF page); `citation_page_hit` matches either. Rows flagged `needs_human_review` are skipped unless `--include-unreviewed`.
+
+**Runner** (`python -m boardgame_agent.evals.runner`) — runs each example through the agent on a fresh thread, judges the answer, computes citation metrics, and writes `results.jsonl` + `summary.json` to `data/eval_runs/{timestamp}/` with breakdowns by game, tag, and difficulty. Flags: `--games`, `--tags`, `--model`, `--judge-model`, `--limit`, `--langsmith` (syncs per-game LangSmith datasets).
+
+**Judge** (`evals/judge.py`) — an LLM judge compares the agent answer to the gold answer on rules substance and returns one of four verdicts: `correct`, `partial`, `incorrect`, or `clarification` — the agent gave no ruling, reported what it verified, and asked a reasonable targeted question. `clarification` is tracked separately from `incorrect` so honest abstention and hallucinated rulings remain distinct signals; the questions the agent asks also identify retrieval gaps directly. Use a judge model different from the agent model.
+
+**Metrics** — `correct_rate` per block, plus `citation_doc_hit` and `citation_page_hit` (any predicted citation matching a gold document / gold (document, page)). Page-level citation accuracy is the metric the bbox citation system uniquely enables.
 
 ---
 
@@ -364,7 +411,7 @@ LangSmith tracing is wired in at import time — `config.py` sets `LANGCHAIN_PRO
 
 **Why `view_page` results are not citable?** VLM analysis helps the agent understand visual content, but it's not a source. "The VLM told me this icon means X" is not evidence — "the rulebook page 12 says this icon means X" is evidence. The agent must follow up VLM understanding with text retrieval to produce citable answers.
 
-**Why Cohere over local re-ranking?** Cohere Rerank consistently outperforms open-source alternatives and has a free tier sufficient for a rules agent. The local FastEmbed fallback exists for offline use.
+**Why local re-ranking by default?** No API key or network dependency for the core pipeline. Cohere Rerank remains available via `RERANK_PROVIDER` for higher-quality hosted re-ranking.
 
 **Why not a knowledge graph?** A knowledge graph of game mechanics would help with multi-hop reasoning, but it requires game-specific ontology design. The current approach (introspective cross-referencing) handles multi-hop without game-specific structure. A knowledge graph may be worth exploring if the current approach hits limits on very complex rule interactions.
 
@@ -374,6 +421,6 @@ LangSmith tracing is wired in at import time — `config.py` sets `LANGCHAIN_PRO
 
 **Corrective RAG (CRAG) — retrieval quality gating.** The Cohere re-ranker returns a `relevance_score` (0-1) per chunk that we currently discard after re-ordering. The CRAG pattern ([arxiv:2401.15884](https://arxiv.org/abs/2401.15884)) uses these scores to classify each retrieved chunk as Correct/Ambiguous/Incorrect before the LLM sees them. Low-scoring chunks are filtered out; if most chunks score poorly, the agent is told retrieval quality was low and should reformulate or try a different source. This would give the introspection loop a concrete signal instead of relying entirely on the model to judge content quality. Implementation requires calibrating score thresholds for the board game rules domain (~30-50 test queries per Cohere's guidance).
 
-**RAGAS evaluation framework.** Reference-free metrics (context precision, context recall, faithfulness) for offline evaluation across a curated question set. Useful for measuring improvement across model and architecture changes. Target: faithfulness > 0.8.
+**Multi-turn evaluation.** The eval harness is single-shot: a `clarification` verdict ends the run. Simulating the user's reply (e.g. answering the agent's page-number question) would measure the full conversational loop, including clarification → `view_page` recovery.
 
 **Task-specific re-ranker fine-tuning.** Generic re-rankers score for topical relevance, but board game rules questions need "answer utility" — a chunk may be topically relevant but not contain the specific rule. Fine-tuning a re-ranker on game rules data could improve precision, but requires collecting labeled examples.

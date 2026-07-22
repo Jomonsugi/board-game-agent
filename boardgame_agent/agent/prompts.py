@@ -24,8 +24,11 @@ def build_system_prompt(
     tools_lines.append(
         "- view_page(doc_name, page_num, question): visually analyze a page to "
         "understand its layout or icons. Use when you found a page but can't "
-        "understand it from text alone. This helps you know WHAT to search for "
-        "next — always follow up with search_rulebook to find citable rules."
+        "understand it from text alone (icon-borne numbers, tokens, and layout "
+        "often exist ONLY in the page image). If the USER names a page "
+        "(including in an earlier message, e.g. answering your clarifying "
+        "question), view that page directly. Follow up with search_rulebook "
+        "for citable rule text where possible."
     )
     tools_lines.append(
         "- search_web(query): search the web for community clarifications, "
@@ -124,8 +127,9 @@ definition, or use view_page if available.
 Once you find the missing definition, combine it with what you already have \
 and call submit_answer.
 
-When a supplement or logbook page references mechanics from the rulebook, \
-search the rulebook for those mechanics, then answer citing both sources.
+When a supplement, scenario book, or reference page references mechanics from \
+the rulebook, search the rulebook for those mechanics, then answer citing both \
+sources.
 
 Do not assume you know what a game term means — retrieve its definition. \
 After finding a rule, check for exceptions ("however," "except," "unless"). \
